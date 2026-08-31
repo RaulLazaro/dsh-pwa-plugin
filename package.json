@@ -1,0 +1,35 @@
+{
+  "name": "dsh-pwa-plugin",
+  "version": "1.0.0",
+  "description": "PWA plugin for DeepSeek Harness - adds offline support and install capability",
+  "type": "module",
+  "main": "src/host/index.js",
+  "exports": {
+    ".": "./src/host/index.js",
+    "./sw": "./src/sw.js",
+    "./manifest": "./public/manifest.webmanifest"
+  },
+  "files": [
+    "src/",
+    "public/"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "pwa",
+    "service-worker",
+    "offline"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "dsh": {
+    "plugin": {
+      "name": "dsh-pwa",
+      "description": "PWA support for DSH Web GUI",
+      "host": "./src/host/index.js",
+      "scope": "web"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "dsh-web-with-pwa",
+  "description": "Example DSH web profile with PWA support",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "dsh-pwa-plugin": "file:../dsh-pwa-plugin"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}

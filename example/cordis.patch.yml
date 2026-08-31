@@ -1,0 +1,15 @@
+# Example: Add PWA support to your DSH web profile
+#
+# Add this to your profile's cordis.patch.yml to enable PWA functionality.
+
+- insert:
+    # PWA support with offline caching
+    - id: pwa
+      name: 'dsh-pwa-plugin'
+      config:
+        # Enable offline caching (default: true)
+        enableOfflineCache: true
+        # Enable install prompt (default: true)
+        enableInstallPrompt: true
+        # Cache update interval in ms (default: 3600000 = 1 hour)
+        updateIntervalMs: 3600000
