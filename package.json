@@ -11,7 +11,8 @@
   },
   "files": [
     "src/",
-    "public/"
+    "public/",
+    "cordis.patch.yml"
   ],
   "keywords": [
     "dsh",
