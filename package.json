@@ -25,11 +25,12 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "dsh": {
-    "plugin": {
-      "name": "dsh-pwa",
-      "description": "PWA support for DSH Web GUI",
-      "host": "./src/host/index.js",
-      "scope": "web"
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
     }
   }
 }

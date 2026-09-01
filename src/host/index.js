@@ -87,10 +87,7 @@ export function apply(ctx) {
       if (!sw) return;
       sw.addEventListener('statechange', function() {
         if (sw.state === 'activated' && navigator.serviceWorker.controller) {
-          if (confirm('New DSH version available. Reload to update?')) {
-            sw.postMessage({ type: 'SKIP_WAITING' });
-            window.location.reload();
-          }
+          sw.postMessage({ type: 'SKIP_WAITING' });
         }
       });
     });

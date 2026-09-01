@@ -1,0 +1,4 @@
+# PWA plugin: adds service worker, manifest, and offline support
+- insert:
+    - id: dsh-pwa
+      name: 'dsh-pwa-plugin'
