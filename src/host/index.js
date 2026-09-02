@@ -60,9 +60,20 @@ export function apply(ctx) {
         kind: 'exact',
         path: routePath,
         handler: async (_req, res) => {
-          if (!existsSync(filePath)) { res.writeHead(404); res.end(); return; }
-          res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=3600' });
-          res.end(readFileSync(filePath));
+          try {
+            if (!existsSync(filePath)) { res.writeHead(404); res.end(); return; }
+            const content = readFileSync(filePath);
+            res.writeHead(200, {
+              'Content-Type': mime,
+              'Cache-Control': 'public, max-age=3600',
+              'Content-Length': content.length
+            });
+            res.end(content);
+          } catch (err) {
+            ctx.logger.warn(`[DSH PWA] static serve error for ${routePath}: ${err.message}`);
+            res.writeHead(500);
+            res.end();
+          }
         }
       });
     }
@@ -101,8 +112,25 @@ export function apply(ctx) {
       return i !== -1 ? html.slice(0, i) + script + html.slice(i) : html + script;
     });
 
+    // 5. Version check endpoint
+    const pkgPath = join(__dirname, '..', '..', 'package.json');
+    const disposeVersion = webServer.register({
+      kind: 'exact',
+      path: '/dsh-pwa/version',
+      handler: async (_req, res) => {
+        try {
+          const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ version: pkg.version, name: pkg.name }));
+        } catch {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ version: 'unknown', name: 'dsh-pwa-plugin' }));
+        }
+      }
+    });
+
     ctx.logger.info('[DSH PWA] loaded — service worker + manifest active');
 
-    return () => { disposeSw(); disposeManifest(); disposeIcons.forEach(d => d()); disposeTap(); };
+    return () => { disposeSw(); disposeManifest(); disposeIcons.forEach(d => d()); disposeTap(); disposeVersion(); };
   });
 }
