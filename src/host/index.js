@@ -74,7 +74,7 @@ export function apply(ctx) {
       serveStatic('/icons/icon-512.png', join(publicDir, 'icons', 'icon-512.png'), 'image/png'),
     ];
 
-    // 3. Inject SW registration script into index.html
+    // 4. Inject SW registration script into index.html
     const disposeTap = webServer.tapIndex((html) => {
       const script = `<script>
 (function() {
