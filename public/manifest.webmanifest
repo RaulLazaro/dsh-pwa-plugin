@@ -1,7 +1,7 @@
 {
   "id": "/",
   "name": "DeepSeek Harness",
-  "short_name": "DeepSeek Harness",
+  "short_name": "DSH",
   "description": "AI-powered coding assistant with agentic capabilities",
   "start_url": "/",
   "scope": "/",
@@ -30,7 +30,6 @@
       "purpose": "any maskable"
     }
   ],
-  "screenshots": [],
   "shortcuts": [
     {
       "name": "New Session",
