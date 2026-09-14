@@ -5,10 +5,10 @@ PWA plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) that adds 
 ## Features
 
 - **Service Worker** with smart caching strategy
-- **PWA Manifest** with icons and metadata
+- **PWA Manifest** with proper maskable icons
 - **Automatic updates** — silently activates new versions
 - **Offline-first** for static assets
-- **Custom icons** (gradient background with DSH branding)
+- **Official DSH whale icon** — derived from the upstream SVG favicon
 
 ## Installation
 
@@ -42,21 +42,30 @@ dsh web
 
 ## Generate PNG Icons
 
-The plugin ships with SVG icons. To generate PNG icons (required for some browsers):
+The plugin ships pre-built PNG icons. To regenerate (requires [sharp](https://sharp.pixelplumbing.com/)):
 
 ```bash
 cd dsh-pwa-plugin
-npm install sharp --save-dev
 node scripts/generate-icons.js
 ```
+
+This reads the official `public/favicon.svg` and produces:
+
+| File | Size | Purpose |
+|------|------|---------|
+| `icon-192.png` | 192×192 | Regular (any) |
+| `icon-192-maskable.png` | 192×192 | Maskable (20% safe zone) |
+| `icon-512.png` | 512×512 | Regular (any) |
+| `icon-512-maskable.png` | 512×512 | Maskable (20% safe zone) |
 
 ## How It Works
 
 1. The host plugin serves `/sw.js`, `/manifest.webmanifest`, and icon files
 2. It injects a service worker registration script into the HTML
-3. The service worker caches static assets for offline use
+3. The service worker caches static assets (including icons) for offline use
 4. The manifest enables installing the app as a PWA
 5. Updates are detected automatically and silently activated
+6. DSH's built-in `/favicon.svg` is used as-is (not overridden)
 
 ## Caching Strategy
 
@@ -82,15 +91,12 @@ dsh-pwa-plugin/
 │   └── sw.js                 # Service Worker
 ├── public/
 │   ├── manifest.webmanifest  # PWA Manifest
-│   ├── favicon.svg           # Favicon
-│   └── icons/                # App icons (SVG + PNG)
+│   ├── favicon.svg           # DSH whale icon (same as upstream)
+│   └── icons/                # PWA icons (maskable + regular)
 ├── scripts/
-│   ├── generate-icons.js     # Icon generator
+│   ├── generate-icons.js     # Icon generator (sharp)
 │   ├── install.js            # Verification script
 │   └── verify.js             # Verification
-├── example/
-│   ├── cordis.patch.yml      # Configuration example
-│   └── package.json          # Profile example
 ├── cordis.patch.yml          # Plugin registration
 ├── LICENSE
 └── package.json

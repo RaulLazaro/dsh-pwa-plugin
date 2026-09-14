@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname, extname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -11,7 +11,7 @@ export function apply(ctx) {
   ctx.effect(() => {
     const { webServer } = ctx;
 
-    // 1. Serve /sw.js
+    // 1. Serve /sw.js — service worker with no-cache headers
     const swSource = join(__dirname, '..', 'sw.js');
     const disposeSw = webServer.register({
       kind: 'exact',
@@ -33,7 +33,7 @@ export function apply(ctx) {
       }
     });
 
-    // 2. Serve improved manifest
+    // 2. Serve enhanced manifest (overrides DSH's minimal built-in one)
     const manifestPath = join(__dirname, '..', '..', 'public', 'manifest.webmanifest');
     const disposeManifest = webServer.register({
       kind: 'exact',
@@ -53,7 +53,8 @@ export function apply(ctx) {
       }
     });
 
-    // 3. Serve icons and favicon
+    // 3. Serve PWA icons (maskable + regular)
+    //    NOTE: /favicon.svg is NOT served here — DSH's built-in handles it.
     const publicDir = join(__dirname, '..', '..', 'public');
     function serveStatic(routePath, filePath, mime) {
       return webServer.register({
@@ -65,7 +66,7 @@ export function apply(ctx) {
             const content = readFileSync(filePath);
             res.writeHead(200, {
               'Content-Type': mime,
-              'Cache-Control': 'public, max-age=3600',
+              'Cache-Control': 'public, max-age=86400',
               'Content-Length': content.length
             });
             res.end(content);
@@ -78,11 +79,10 @@ export function apply(ctx) {
       });
     }
     const disposeIcons = [
-      serveStatic('/favicon.svg', join(publicDir, 'favicon.svg'), 'image/svg+xml'),
-      serveStatic('/icons/icon-192.svg', join(publicDir, 'icons', 'icon-192.svg'), 'image/svg+xml'),
-      serveStatic('/icons/icon-512.svg', join(publicDir, 'icons', 'icon-512.svg'), 'image/svg+xml'),
-      serveStatic('/icons/icon-192.png', join(publicDir, 'icons', 'icon-192.png'), 'image/png'),
-      serveStatic('/icons/icon-512.png', join(publicDir, 'icons', 'icon-512.png'), 'image/png'),
+      serveStatic('/icons/icon-192.png',        join(publicDir, 'icons', 'icon-192.png'),        'image/png'),
+      serveStatic('/icons/icon-192-maskable.png', join(publicDir, 'icons', 'icon-192-maskable.png'), 'image/png'),
+      serveStatic('/icons/icon-512.png',        join(publicDir, 'icons', 'icon-512.png'),        'image/png'),
+      serveStatic('/icons/icon-512-maskable.png', join(publicDir, 'icons', 'icon-512-maskable.png'), 'image/png'),
     ];
 
     // 4. Inject SW registration script into index.html
@@ -129,7 +129,7 @@ export function apply(ctx) {
       }
     });
 
-    ctx.logger.info('[DSH PWA] loaded — service worker + manifest active');
+    ctx.logger.info('[DSH PWA] loaded — service worker + manifest + icons active');
 
     return () => { disposeSw(); disposeManifest(); disposeIcons.forEach(d => d()); disposeTap(); disposeVersion(); };
   });
