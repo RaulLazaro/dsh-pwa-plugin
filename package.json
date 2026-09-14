@@ -1,6 +1,6 @@
 {
   "name": "dsh-pwa-plugin",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "PWA plugin for DeepSeek Harness - adds offline support and install capability",
   "type": "module",
   "main": "src/host/index.js",

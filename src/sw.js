@@ -1,5 +1,5 @@
-const CACHE_NAME = 'dsh-pwa-v3';
-const STATIC_CACHE = 'dsh-static-v3';
+const CACHE_NAME = 'dsh-pwa-v4';
+const STATIC_CACHE = 'dsh-static-v4';
 
 // Assets to pre-cache on install
 const PRE_CACHE_URLS = [
@@ -36,6 +36,11 @@ const OFFLINE_PAGE = `
 </body>
 </html>`;
 
+// Safe cache put — swallows errors for unsupported schemes (chrome-extension://, etc.)
+function safeCachePut(cache, request, response) {
+  return cache.put(request, response).catch(() => {});
+}
+
 // Install event: pre-cache static assets
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -66,6 +71,9 @@ self.addEventListener('fetch', (event) => {
   // Skip non-GET requests
   if (request.method !== 'GET') return;
 
+  // Skip non-HTTP(S) schemes (chrome-extension://, moz-extension://, etc.)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
   // Skip API calls, WebSocket, and plugin hot-reload paths
   if (url.pathname.startsWith('/api') ||
       url.pathname.startsWith('/plugins') ||
@@ -82,7 +90,7 @@ self.addEventListener('fetch', (event) => {
         .then((response) => {
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
-            cache.put(request, responseClone);
+            safeCachePut(cache, request, responseClone);
           });
           return response;
         })
@@ -111,7 +119,7 @@ self.addEventListener('fetch', (event) => {
 
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
-            cache.put(request, responseClone);
+            safeCachePut(cache, request, responseClone);
           });
 
           return response;

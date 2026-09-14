@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+- Fix `TypeError: Failed to execute 'put' on 'Cache': Request scheme 'chrome-extension' is unsupported` — skip non-HTTP(S) schemes early
+- Add `safeCachePut()` wrapper to swallow cache errors gracefully
+- Service worker cache names bumped to v4
+
 ## 1.1.0
 
 - Proper maskable icons with 20% safe-zone inset (OS crop-safe for circles/squircles)
