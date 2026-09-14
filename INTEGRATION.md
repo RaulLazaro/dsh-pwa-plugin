@@ -62,21 +62,32 @@ dsh web
 2. When the service worker detects a new version, it activates silently
 3. On `controllerchange`, the page auto-reloads with the new version
 
-## Custom Icons
+## Icons
 
-### Generate PNGs from SVG
+The plugin ships with 4 pre-built PNG icons derived from the official DSH whale SVG:
+
+| File | Size | Purpose | Notes |
+|------|------|---------|-------|
+| `icon-192.png` | 192×192 | Any | 90% safe zone |
+| `icon-192-maskable.png` | 192×192 | Maskable | 80% safe zone (20% inset) |
+| `icon-512.png` | 512×512 | Any | 90% safe zone |
+| `icon-512-maskable.png` | 512×512 | Maskable | 80% safe zone (20% inset) |
+
+Maskable icons have a 20% safe-zone inset so the OS can crop them into circles, squircles, etc. without clipping the whale logo.
+
+### Regenerate Icons
+
+Requires [sharp](https://sharp.pixelplumbing.com/):
 
 ```bash
-cd dsh-pwa-plugin
-npm install sharp --save-dev
 node scripts/generate-icons.js
 ```
 
-### Use your own icons
+### Use Your Own Icons
 
 1. Replace files in `public/icons/`:
-   - `icon-192.png` and `icon-512.png` (required)
-   - `icon-192.svg` and `icon-512.svg` (optional)
+   - `icon-192.png` and `icon-512.png` (regular, required)
+   - `icon-192-maskable.png` and `icon-512-maskable.png` (maskable, required)
 2. Update `public/manifest.webmanifest` if you change filenames
 
 ## Verification
@@ -85,7 +96,7 @@ node scripts/generate-icons.js
 node scripts/verify.js
 ```
 
-Checks that all required files exist and the manifest is valid.
+Checks that all required files exist, the manifest is valid, and icon variants are present.
 
 ## Troubleshooting
 
@@ -97,7 +108,7 @@ Checks that all required files exist and the manifest is valid.
 
 ### Icons don't appear
 
-- Check `public/icons/` for the PNG files
+- Check `public/icons/` for all 4 PNG files
 - Verify `manifest.webmanifest` paths are correct
 - Run `node scripts/generate-icons.js` to regenerate
 

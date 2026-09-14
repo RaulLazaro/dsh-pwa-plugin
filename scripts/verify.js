@@ -88,13 +88,38 @@ function verify() {
 
       allPassed = check(
         'Manifest: icons',
-        Array.isArray(manifest.icons) && manifest.icons.length > 0,
-        'No icons defined'
+        Array.isArray(manifest.icons) && manifest.icons.length >= 4,
+        `Expected ≥4 icon entries (any + maskable × 2 sizes), found ${manifest.icons?.length ?? 0}`
+      ) && allPassed;
+
+      // Check that both 'any' and 'maskable' purposes are present
+      const purposes = new Set(manifest.icons.map(i => i.purpose).flat());
+      allPassed = check(
+        'Manifest: maskable icon purpose',
+        purposes.has('maskable'),
+        'No icon with purpose "maskable" found'
       ) && allPassed;
     } catch (err) {
       error(`Manifest parsing failed: ${err.message}`);
       allPassed = false;
     }
+  }
+
+  // Check icon files exist on disk
+  const iconsDir = join(rootDir, 'public', 'icons');
+  const requiredIcons = [
+    'icon-192.png',
+    'icon-192-maskable.png',
+    'icon-512.png',
+    'icon-512-maskable.png'
+  ];
+  log('\nChecking icon files...');
+  for (const icon of requiredIcons) {
+    allPassed = check(
+      `Icon: ${icon}`,
+      existsSync(join(iconsDir, icon)),
+      `Missing ${icon} in public/icons/`
+    ) && allPassed;
   }
 
   // Check DSH installation
