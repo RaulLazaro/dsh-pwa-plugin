@@ -1,11 +1,15 @@
-const CACHE_NAME = 'dsh-pwa-v2';
-const STATIC_CACHE = 'dsh-static-v2';
+const CACHE_NAME = 'dsh-pwa-v4';
+const STATIC_CACHE = 'dsh-static-v4';
 
 // Assets to pre-cache on install
 const PRE_CACHE_URLS = [
   '/',
   '/manifest.webmanifest',
-  '/favicon.svg'
+  '/favicon.svg',
+  '/icons/icon-192.png',
+  '/icons/icon-192-maskable.png',
+  '/icons/icon-512.png',
+  '/icons/icon-512-maskable.png'
 ];
 
 // Offline fallback page
@@ -21,18 +25,21 @@ const OFFLINE_PAGE = `
     .container { text-align: center; padding: 2rem; }
     h1 { font-size: 2rem; margin-bottom: 0.5rem; }
     p { color: #94a3b8; margin-top: 0.5rem; }
-    .icon { font-size: 4rem; margin-bottom: 1rem; }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="icon">\ud83d\udc33</div>
     <h1>You're offline</h1>
     <p>DeepSeek Harness needs a network connection.</p>
     <p>Please check your connection and try again.</p>
   </div>
 </body>
 </html>`;
+
+// Safe cache put — swallows errors for unsupported schemes (chrome-extension://, etc.)
+function safeCachePut(cache, request, response) {
+  return cache.put(request, response).catch(() => {});
+}
 
 // Install event: pre-cache static assets
 self.addEventListener('install', (event) => {
@@ -64,7 +71,10 @@ self.addEventListener('fetch', (event) => {
   // Skip non-GET requests
   if (request.method !== 'GET') return;
 
-  // Skip API calls and WebSocket upgrades
+  // Skip non-HTTP(S) schemes (chrome-extension://, moz-extension://, etc.)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
+  // Skip API calls, WebSocket, and plugin hot-reload paths
   if (url.pathname.startsWith('/api') ||
       url.pathname.startsWith('/plugins') ||
       url.pathname.startsWith('/ws') ||
@@ -80,7 +90,7 @@ self.addEventListener('fetch', (event) => {
         .then((response) => {
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
-            cache.put(request, responseClone);
+            safeCachePut(cache, request, responseClone);
           });
           return response;
         })
@@ -102,19 +112,18 @@ self.addEventListener('fetch', (event) => {
         if (cached) return cached;
 
         return fetch(request).then((response) => {
-          // Only cache successful responses
+          // Only cache successful same-origin responses
           if (!response || response.status !== 200 || response.type !== 'basic') {
             return response;
           }
 
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
-            cache.put(request, responseClone);
+            safeCachePut(cache, request, responseClone);
           });
 
           return response;
         }).catch(() => {
-          // Return a basic offline response for failed fetches
           return new Response('Offline', { status: 503, statusText: 'Service Unavailable' });
         });
       })
