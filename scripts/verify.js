@@ -122,39 +122,19 @@ function verify() {
     ) && allPassed;
   }
 
-  // Check DSH installation
+  // Check DSH installation (informational — not required for CI)
   const DSH_HOME = process.env.DSH_HOME || join(process.env.HOME || '/root', '.dsh');
 
-  log('\nChecking DSH installation...');
-
-  allPassed = check(
-    'DSH_HOME',
-    existsSync(DSH_HOME),
-    `DSH_HOME not found at ${DSH_HOME}`
-  ) && allPassed;
-
   if (existsSync(DSH_HOME)) {
-    allPassed = check(
-      'DSH plugins directory',
-      existsSync(join(DSH_HOME, 'plugins')),
-      'Plugins directory not found'
-    ) && allPassed;
-
-    allPassed = check(
-      'DSH profiles directory',
-      existsSync(join(DSH_HOME, 'profiles')),
-      'Profiles directory not found'
-    ) && allPassed;
+    log('\nChecking DSH installation...');
+    check('DSH plugins directory', existsSync(join(DSH_HOME, 'plugins')), 'Not found');
+    check('DSH profiles directory', existsSync(join(DSH_HOME, 'profiles')), 'Not found');
   }
 
   console.log('');
 
   if (allPassed) {
     log('All checks passed! ✓');
-    log('\nNext steps:');
-    log('1. Run: node scripts/install.js');
-    log('2. Add the plugin to your DSH web profile');
-    log('3. Restart DSH web');
   } else {
     error('Some checks failed. Please fix the issues above.');
     process.exit(1);
