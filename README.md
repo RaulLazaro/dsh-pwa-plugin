@@ -102,6 +102,25 @@ dsh-pwa-plugin/
 └── package.json
 ```
 
+## Testing
+
+```bash
+npm test
+```
+
+Zero-dependency suite on Node's built-in runner (`node --test`):
+
+- `test/manifest.test.mjs` — manifest required fields, icon densities (regular +
+  maskable at 192/512) and that every icon file exists on disk.
+- `test/sw.test.mjs` — the service worker evaluated against a fake `self`:
+  install/activate cache lifecycle, the bypass rules (non-GET, non-HTTP schemes,
+  `/api`, `/plugins`, `/ws`, `/hooks`, websocket upgrades), network-first HTML
+  with its offline fallbacks, cache-first statics with the 200/basic cache guard,
+  and the `GET_VERSION` / `SKIP_WAITING` messages.
+- `test/host.test.mjs` — route registration (sw, manifest, 4 icons, version),
+  response headers, the index-HTML script injection, and the effect cleanup
+  used on HMR unmounts.
+
 ## License
 
 MIT
