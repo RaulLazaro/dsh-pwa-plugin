@@ -643,3 +643,50 @@ test('a paste that missed every editable is put back into the composer', async (
   assert.equal(root.dispatched.length, 1);
   assert.equal(root.dispatched[0].clipboardData.getData('text/plain'), 'LOST');
 });
+
+test('a clipboard block arriving as one insertText is replayed as a paste', async () => {
+  const { document, root } = await load({ coarse: true });
+  const block = 'x'.repeat(131);
+  const bulk = new StubEvent('beforeinput', {
+    inputType: 'insertText',
+    data: block,
+    bubbles: true,
+    cancelable: true,
+  });
+  bulk.target = root;
+  document.fire('beforeinput', bulk);
+
+  assert.equal(bulk.defaultPrevented, true, 'a block too long to be a keystroke is claimed');
+  assert.equal(bulk.immediateStopped, true);
+  assert.equal(root.dispatched.length, 1);
+  assert.equal(root.dispatched[0].clipboardData.getData('text/plain'), block);
+});
+
+test('an ordinary keystroke is left to the editor', async () => {
+  const { document, root } = await load({ coarse: true });
+  const typed = new StubEvent('beforeinput', {
+    inputType: 'insertText',
+    data: 'a',
+    bubbles: true,
+    cancelable: true,
+  });
+  typed.target = root;
+  document.fire('beforeinput', typed);
+
+  assert.equal(typed.defaultPrevented, false, 'typing must not be rerouted');
+  assert.equal(typed.immediateStopped, false);
+  assert.equal(root.dispatched.length, 0);
+
+  // Exactly the threshold: a suggested word still types normally.
+  const word = new StubEvent('beforeinput', {
+    inputType: 'insertText',
+    data: 'x'.repeat(16),
+    bubbles: true,
+    cancelable: true,
+  });
+  word.target = root;
+  document.fire('beforeinput', word);
+
+  assert.equal(word.defaultPrevented, false, 'a word is still typing');
+  assert.equal(root.dispatched.length, 0);
+});

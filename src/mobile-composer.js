@@ -22,11 +22,15 @@
  *    event carries no payload at all. Confirmed working on the device via the
  *    long-press Paste menu item.
  *
- * 3. Paste that reaches the page with no editable under the event. The Android
+ * 3. Paste that never announces itself as one. The Android
  *    clipboard overlay and the keyboard's quick-paste chip do deliver a payload:
  *    a plain textarea in the probe took the same 1515 characters the composer
- *    refused, so nothing is lost in the OS or the browser. Two entry points are
- *    handled. A paste carrying text/html beside text/plain is replayed as its
+ *    refused, so nothing is lost in the OS or the browser. Three shapes are
+ *    handled, and the chip uses the quietest one: the whole block arrives as a
+ *    single insertText - 131 characters in one event on the device, with no paste
+ *    event and no clipboardData at all - so anything longer than a keystroke, an
+ *    autocorrect word or a composition commit is replayed as a paste instead of
+ *    being left to the per-keystroke command. A paste carrying text/html beside
  *    plain text, since markup pastes are the ones reported to vanish; the bundle
  *    shows the copy path installs both types itself (client.js:12113), so what
  *    actually separates the two gestures is still open, and the probe's `types=`
@@ -64,7 +68,8 @@
   var PASTE_INPUT_TYPES = { insertFromPaste: true, insertFromPasteAsQuotation: true };
   // Types a closed IME path can produce. insertText/insertCompositionText are
   // omitted on purpose: they fire once per keystroke, so tracing them on the
-  // panel made ordinary typing look like the paste being tested.
+  // panel made ordinary typing look like the paste being tested. A large
+  // insertText is not watched but claimed - see TYPED_CHUNK_MAX.
   var WATCHED_INPUT_TYPES = {
     insertFromComposition: true,
     insertFromDrop: true,
@@ -74,6 +79,11 @@
   };
   var ARMED_MS = 25000;
   var PANEL_LINES = 8;
+  // The chip commits a pasted block as one insertText. A keystroke, an
+  // autocorrect word and a predictive-text sentence all arrive the same way, so
+  // the threshold sits above anything a keyboard sends in one event and far
+  // below the smallest block seen on the device (131 characters).
+  var TYPED_CHUNK_MAX = 16;
 
   var traced = [];
   var panel = null;
@@ -575,6 +585,21 @@
       }
 
       var data = typeof event.data === 'string' ? event.data : '';
+
+      // The clipboard overlay and the keyboard's quick-paste chip never produce a
+      // paste event: the whole block arrives as ONE insertText, which Lexical
+      // reads as a keystroke and hands to its per-keystroke insertion command - a
+      // 131 character block is not a keystroke. A real keystroke, an autocorrect
+      // word or a composition commit is a handful of characters, so anything
+      // longer came off the clipboard and goes down the path the long-press paste
+      // already proved on the device.
+      if (type === 'insertText' && event.isComposing !== true && data.length > TYPED_CHUNK_MAX && root !== null) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        lastEditor = root;
+        insert(root, data, 'bulk insertText ' + data.length + ' chars');
+        return;
+      }
       if (!isArmed()) {
         // Outside a capture window only unexpected shapes are worth a console
         // line, and they never raise the panel: that was what made typing look
