@@ -30,13 +30,35 @@
  *    single insertText - 131 characters in one event on the device, with no paste
  *    event and no clipboardData at all - so anything longer than a keystroke, an
  *    autocorrect word or a composition commit is replayed as a paste instead of
- *    being left to the per-keystroke command. A paste carrying text/html beside
+ *    being left to the per-keystroke command. That commit can also arrive with no
+ *    editable under it at all, because the panel holds focus while it is open: the
+ *    device shows focusout/focusin around the block and then +505 in DIV ed=505
+ *    followed by ed=0, so a block that missed every editable goes to the editor
+ *    last typed in. A paste carrying text/html beside
  *    plain text, since markup pastes are the ones reported to vanish; the bundle
  *    shows the copy path installs both types itself (client.js:12113), so what
  *    actually separates the two gestures is still open, and the probe's `types=`
  *    field is what will name it. A paste that lands on no editable at
  *    all, which is what an overlay tap looks like from inside the page because
  *    the editor has lost focus, is put back into the editor last typed in.
+ *
+ *    This is not special to this composer: the keyboard's clipboard panel
+ *    inserting without a paste event is facebook/lexical#7251 (open since
+ *    Feb 2025; the text is folded into one paragraph or arrives cut short),
+ *    ProseMirror/prosemirror#1524 (only the line break arrives) and
+ *    ueberdosis/tiptap#5911 (paste rules skipped), and a 2021 Stack Overflow
+ *    report with the workaround we use - read the payload off the input event
+ *    instead of waiting for a paste.
+ *
+ *    Select all is the other report that leaves no fingerprint: it is a native
+ *    command, so it dispatches no input event and the selection is the only
+ *    witness. While a window is open the panel records `sel <n> chars lex=<0|1>`
+ *    once the selection settles, which separates "the browser selected nothing"
+ *    from "it selected the text and whatever came next failed". Lexical has a
+ *    matching bug of its own - facebook/lexical#9250, fixed upstream in #9251 -
+ *    where the next nonempty insertText after a handled select-all is suppressed
+ *    on every platform, which is exactly what a clipboard-panel commit looks
+ *    like to the editor.
  *
  *    The probe stays for what the trace has not explained yet: tapping `probe`
  *    clears the log, arms a 25s capture window and shows the panel, and for that
@@ -593,12 +615,27 @@
       // word or a composition commit is a handful of characters, so anything
       // longer came off the clipboard and goes down the path the long-press paste
       // already proved on the device.
-      if (type === 'insertText' && event.isComposing !== true && data.length > TYPED_CHUNK_MAX && root !== null) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        lastEditor = root;
-        insert(root, data, 'bulk insertText ' + data.length + ' chars');
-        return;
+      if (type === 'insertText' && event.isComposing !== true && data.length > TYPED_CHUNK_MAX) {
+        if (root !== null) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          lastEditor = root;
+          insert(root, data, 'bulk insertText ' + data.length + ' chars');
+          return;
+        }
+        // The keyboard's clipboard panel holds focus while it is open, so the
+        // commit can arrive with no editable under it at all, and then the block
+        // goes nowhere. Put it where the user was typing, but only when the event
+        // missed every editable: a field in a dialog owns its own commit.
+        if (!isEditableTarget(event.target)) {
+          var stray = liveEditor();
+          if (stray !== null) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            insert(stray, data, 'bulk insertText recovered ' + data.length + ' chars');
+            return;
+          }
+        }
       }
       if (!isArmed()) {
         // Outside a capture window only unexpected shapes are worth a console
@@ -719,6 +756,49 @@
 
   document.addEventListener('focusin', onFocus, true);
   document.addEventListener('focusout', onFocus, true);
+
+  var selectionTimer = null;
+
+  function reportSelection() {
+    selectionTimer = null;
+    if (!isArmed()) return;
+    var selection = null;
+    try {
+      selection = typeof document.getSelection === 'function' ? document.getSelection() : null;
+    } catch (err) {
+      selection = null;
+    }
+    if (selection === null || selection === undefined) {
+      observe('sel no selection object');
+      return;
+    }
+    var text = '';
+    try {
+      text = String(selection.toString() || '');
+    } catch (err) {
+      text = '';
+    }
+    var anchor = selection.anchorNode;
+    var node = anchor && anchor.nodeType === 3 ? anchor.parentElement : anchor;
+    var lex = node && typeof node.closest === 'function' && node.closest(EDITOR_SELECTOR) !== null ? 1 : 0;
+    observe('sel ' + text.length + ' chars lex=' + lex + ' @' + tagOf(node) + ' ed=' + editorsLen());
+  }
+
+  /**
+   * Select all is a native command: it dispatches no input event at all, so the
+   * only witness is the selection itself. The length Android reports separates
+   * "the browser selected nothing" from "it selected the text and whatever the
+   * user did next failed". Debounced, so dragging a selection is one line.
+   */
+  document.addEventListener(
+    'selectionchange',
+    function () {
+      if (!isArmed()) return;
+      if (selectionTimer !== null) clearTimeout(selectionTimer);
+      selectionTimer = setTimeout(reportSelection, 250);
+    },
+    true,
+  );
 
   document.addEventListener(
     'keydown',

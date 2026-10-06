@@ -644,6 +644,56 @@ test('a paste that missed every editable is put back into the composer', async (
   assert.equal(root.dispatched[0].clipboardData.getData('text/plain'), 'LOST');
 });
 
+test('a block committed where no editable sits is put back into the composer', async () => {
+  const { document, root } = await load({ coarse: true });
+  const transfer = new StubDataTransfer();
+  transfer.setData('text/plain', 'SEED');
+  const seed = new StubClipboardEvent('paste', {
+    clipboardData: transfer,
+    bubbles: true,
+    cancelable: true,
+  });
+  seed.target = root;
+  document.fire('paste', seed);
+  assert.equal(root.dispatched.length, 0, 'a paste aimed at the composer is left to the composer');
+
+  // The clipboard panel takes focus: the block arrives as one insertText with no
+  // editable under the event at all, which is the gesture the device reports as
+  // doing nothing.
+  const block = 'x'.repeat(131);
+  const bulk = new StubEvent('beforeinput', {
+    inputType: 'insertText',
+    data: block,
+    bubbles: true,
+    cancelable: true,
+  });
+  bulk.target = { tagName: 'BODY' };
+  document.fire('beforeinput', bulk);
+
+  assert.equal(bulk.defaultPrevented, true, 'a block with no editable under it is claimed');
+  assert.equal(bulk.immediateStopped, true);
+  assert.equal(root.dispatched.length, 1);
+  assert.equal(root.dispatched[0].clipboardData.getData('text/plain'), block);
+});
+
+test('a block committed into a real field is left to that field', async () => {
+  const { document, root } = await load({ coarse: true });
+  const block = 'x'.repeat(131);
+  const field = new StubEvent('beforeinput', {
+    inputType: 'insertText',
+    data: block,
+    bubbles: true,
+    cancelable: true,
+  });
+  // The device proves a plain textarea takes this commit natively: the field
+  // must keep receiving it, or the fix breaks the one path that works.
+  field.target = { tagName: 'TEXTAREA' };
+  document.fire('beforeinput', field);
+
+  assert.equal(field.defaultPrevented, false, 'a textarea owns its own commit');
+  assert.equal(root.dispatched.length, 0);
+});
+
 test('a clipboard block arriving as one insertText is replayed as a paste', async () => {
   const { document, root } = await load({ coarse: true });
   const block = 'x'.repeat(131);
@@ -689,4 +739,34 @@ test('an ordinary keystroke is left to the editor', async () => {
 
   assert.equal(word.defaultPrevented, false, 'a word is still typing');
   assert.equal(root.dispatched.length, 0);
+});
+
+test('the probe records what a select-all did to the selection', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { document, body, root } = await load({ coarse: true });
+  probeControl(body, 'arm').dispatch('click', new StubEvent('click', { bubbles: true }));
+
+  document.getSelection = () => ({ toString: () => 'ALL OF IT', anchorNode: root });
+  document.fire('selectionchange', new StubEvent('selectionchange', {}));
+  t.mock.timers.tick(400);
+  assert.match(
+    diagPanel(body).textContent,
+    /sel 9 chars lex=1/,
+    'the selection the browser made must be visible, because Select all dispatches no input event'
+  );
+
+  // The failing case has to look different from the working one.
+  document.getSelection = () => ({ toString: () => '', anchorNode: null });
+  document.fire('selectionchange', new StubEvent('selectionchange', {}));
+  t.mock.timers.tick(400);
+  assert.match(diagPanel(body).textContent, /sel 0 chars lex=0/, 'a selection that never happened must read as zero');
+});
+
+test('the probe takes a selection reading outside a window', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { document, body } = await load({ coarse: true });
+  document.getSelection = () => ({ toString: () => 'IGNORED', anchorNode: null });
+  document.fire('selectionchange', new StubEvent('selectionchange', {}));
+  t.mock.timers.tick(400);
+  assert.equal(diagPanel(body), undefined, 'nothing is traced outside an armed window');
 });
