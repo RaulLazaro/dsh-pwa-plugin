@@ -94,16 +94,21 @@ function makeDocument() {
   };
 }
 
-function makeRoot({ haspopup = null, visible = true } = {}) {
+function makeRoot({ haspopup = null, visible = true, consume = false } = {}) {
   const dispatched = [];
   const root = {
     id: '',
     dispatched,
+    textContent: '',
     offsetParent: visible ? {} : null,
     getAttribute: (attr) => (attr === 'aria-haspopup' ? haspopup : null),
     closest: (selector) => (selector === EDITOR_SELECTOR ? root : null),
+    focus: () => {},
     dispatchEvent: (event) => {
       dispatched.push(event);
+      // The composer's PASTE handler calls preventDefault on the branch that
+      // inserts the text, which is how the fix knows the text landed.
+      if (consume && event.type === 'paste') event.preventDefault();
       return true;
     },
   };
@@ -112,8 +117,15 @@ function makeRoot({ haspopup = null, visible = true } = {}) {
 
 let loadCount = 0;
 
-async function load({ coarse = true, forced = false, clipboard = null } = {}) {
+async function load({
+  coarse = true,
+  forced = false,
+  clipboard = null,
+  consume = false,
+  execCommand = null,
+} = {}) {
   const document = makeDocument();
+  if (execCommand !== null) document.execCommand = execCommand;
   const window = {
     matchMedia: () => ({ matches: coarse }),
     __DSH_FORCE_MOBILE_COMPOSER__: forced,
@@ -140,7 +152,12 @@ async function load({ coarse = true, forced = false, clipboard = null } = {}) {
   // A unique query string defeats the ESM module cache, so each test gets a
   // freshly executed copy of the fix.
   await import(`../src/mobile-composer.js?stub=${++loadCount}`);
-  return { document, window, root: makeRoot(), restore: () => Object.assign(globalThis, previous) };
+  return {
+    document,
+    window,
+    root: makeRoot({ consume }),
+    restore: () => Object.assign(globalThis, previous),
+  };
 }
 
 function enter(overrides = {}) {
@@ -297,4 +314,96 @@ test('non-paste beforeinput types are ignored', async () => {
     assert.equal(event.defaultPrevented, false, `${inputType} must be untouched`);
   }
   assert.equal(root.dispatched.length, 0);
+});
+
+test('a consumed paste is never inserted twice', async () => {
+  const commands = [];
+  const { document, root } = await load({
+    coarse: true,
+    consume: true,
+    execCommand: (name, ui, value) => {
+      commands.push([name, value]);
+      return true;
+    },
+  });
+  const transfer = new StubDataTransfer();
+  transfer.setData('text/plain', 'ONCE');
+  const androidPaste = new StubEvent('beforeinput', {
+    inputType: 'insertFromPaste',
+    dataTransfer: transfer,
+    bubbles: true,
+    cancelable: true,
+  });
+  androidPaste.target = root;
+  document.fire('beforeinput', androidPaste);
+
+  assert.equal(root.dispatched.length, 1, 'exactly one synthetic paste');
+  assert.equal(
+    commands.length,
+    0,
+    'preventDefault on the synthetic paste is the composer accepting it, so no fallback may run'
+  );
+});
+
+test('a rejected paste falls back to insertText', async () => {
+  const commands = [];
+  const { document, root } = await load({
+    coarse: true,
+    execCommand: (name, ui, value) => {
+      commands.push([name, value]);
+      return true;
+    },
+  });
+  const transfer = new StubDataTransfer();
+  transfer.setData('text/plain', 'FALLBACK');
+  const androidPaste = new StubEvent('beforeinput', {
+    inputType: 'insertFromPasteAsQuotation',
+    dataTransfer: transfer,
+    bubbles: true,
+    cancelable: true,
+  });
+  androidPaste.target = root;
+  document.fire('beforeinput', androidPaste);
+
+  assert.equal(root.dispatched.length, 1);
+  assert.deepEqual(
+    commands,
+    [['insertText', 'FALLBACK']],
+    'execCommand generates the real beforeinput/input pair Lexical handles'
+  );
+});
+
+test('a paste event the composer cannot read is taken over', async () => {
+  const { document, root } = await load({
+    coarse: true,
+    clipboard: { readText: async () => 'FROM_CLIPBOARD' },
+  });
+  const empty = new StubClipboardEvent('paste', {
+    clipboardData: null,
+    bubbles: true,
+    cancelable: true,
+  });
+  empty.target = root;
+  document.fire('paste', empty);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(empty.defaultPrevented, true, 'the composer would return false on this event');
+  assert.equal(root.dispatched.length, 1);
+  assert.equal(root.dispatched[0].clipboardData.getData('text/plain'), 'FROM_CLIPBOARD');
+});
+
+test('a well-formed paste event is left to the composer', async () => {
+  const { document, root } = await load({ coarse: true });
+  const transfer = new StubDataTransfer();
+  transfer.setData('text/plain', 'NATIVE');
+  const native = new StubClipboardEvent('paste', {
+    clipboardData: transfer,
+    bubbles: true,
+    cancelable: true,
+  });
+  native.target = root;
+  document.fire('paste', native);
+
+  assert.equal(native.defaultPrevented, false, 'the composer reads clipboardData itself');
+  assert.equal(root.dispatched.length, 0, 'nothing may be re-dispatched');
 });

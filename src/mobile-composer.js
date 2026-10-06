@@ -12,11 +12,17 @@
  *    recurse because it carries shiftKey.
  *
  * 2. Paste does nothing. Chrome on Android delivers a long-press paste as
- *    beforeinput/insertFromPaste and puts the payload on the InputEvent's
- *    dataTransfer. The composer's PASTE handler reads event.clipboardData
- *    only (client.js:16718), sees null, and returns false, so the text is
- *    dropped. We re-dispatch a real paste ClipboardEvent carrying the text, so
- *    the composer's own insertion path runs unchanged.
+ *    beforeinput/insertFromPaste with the payload on the InputEvent's
+ *    dataTransfer. Lexical's own beforeinput branch preventDefaults every
+ *    input type (client.js:5501) and then dispatches PASTE_COMMAND with that
+ *    InputEvent (client.js:5521-5523), but the composer's PASTE handler reads
+ *    event.clipboardData only (client.js:16718) and returns false when there
+ *    is none - so the text is dropped after the native insertion has already
+ *    been cancelled. We take the event over and re-dispatch a real paste
+ *    ClipboardEvent, which the composer's handler reads. When that synthetic
+ *    event is rejected, or nothing readable came with the event, we fall back
+ *    to document.execCommand('insertText'), which produces the real
+ *    beforeinput/input pair Lexical does handle.
  *
  * Both listeners are capture-phase and gated to coarse pointers, so desktop
  * behaviour is byte-for-byte unchanged. window.__DSH_FORCE_MOBILE_COMPOSER__
@@ -34,7 +40,10 @@
 
   var EDITOR_SELECTOR = '[data-lexical-editor="true"]';
   var PASTE_INPUT_TYPES = { insertFromPaste: true, insertFromPasteAsQuotation: true };
-  var marked = {};
+
+  var traced = [];
+  var panel = null;
+  var panelTimer = null;
 
   /** The composer's Lexical root, or null when the event is not aimed at it. */
   function composerRoot(event) {
@@ -53,9 +62,49 @@
     return root.getAttribute('aria-haspopup') === 'menu';
   }
 
-  function stamp(node) {
-    var key = node.id || (node.id = 'dsh-pwa-node-' + Math.random().toString(36).slice(2));
-    return key;
+  // Every paste branch records one line. Nothing is shown to the user unless a
+  // branch fails, so a working phone never sees a panel and a broken one says
+  // exactly which step lost the text.
+  function trace(line) {
+    traced.push(line);
+    if (traced.length > 6) traced.shift();
+    try {
+      console.log('[DSH PWA] ' + line);
+    } catch (err) {}
+  }
+
+  function report(line) {
+    trace(line);
+    if (typeof document.createElement !== 'function' || document.body === null) return;
+    if (panel === null) {
+      panel = document.createElement('pre');
+      panel.setAttribute('data-dsh-pwa-diagnostic', '');
+      panel.style.cssText = [
+        'position:fixed',
+        'left:0',
+        'right:0',
+        'bottom:0',
+        'z-index:2147483647',
+        'margin:0',
+        'padding:8px 10px',
+        'max-height:38vh',
+        'overflow:hidden',
+        'background:rgba(15,23,42,0.96)',
+        'color:#e2e8f0',
+        'font:11px/1.5 ui-monospace,monospace',
+        'white-space:pre-wrap',
+        'word-break:break-word',
+        'pointer-events:none',
+        'border-top:1px solid #334155',
+      ].join(';');
+      document.body.appendChild(panel);
+    }
+    panel.textContent = traced.join('\n');
+    panel.style.display = 'block';
+    if (panelTimer !== null) clearTimeout(panelTimer);
+    panelTimer = setTimeout(function () {
+      if (panel !== null) panel.style.display = 'none';
+    }, 20000);
   }
 
   document.addEventListener(
@@ -86,30 +135,95 @@
     true,
   );
 
-  function replayPaste(root, text) {
-    if (typeof text !== 'string' || text === '') return;
+  function textFrom(source) {
+    if (source === null || source === undefined) return '';
+    if (typeof source.getData !== 'function') return '';
+    try {
+      return source.getData('text/plain') || '';
+    } catch (err) {
+      return '';
+    }
+  }
+
+  /**
+   * Re-dispatch the paste as a real ClipboardEvent so the composer's handler,
+   * which reads event.clipboardData, can run unchanged. Returns true when the
+   * composer consumed it: that handler calls preventDefault on the branch that
+   * inserts the text, so defaultPrevented is the composer's own verdict.
+   */
+  function replayAsPaste(root, text) {
     var transfer;
     try {
       transfer = new DataTransfer();
       transfer.setData('text/plain', text);
+      if (transfer.getData('text/plain') !== text) return false;
     } catch (err) {
-      transfer = null;
+      return false;
     }
-    if (transfer === null) return;
-    var key = stamp(root);
-    marked[key] = true;
+    var event;
     try {
-      root.dispatchEvent(
-        new ClipboardEvent('paste', {
-          clipboardData: transfer,
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-        }),
-      );
-    } finally {
-      marked[key] = false;
+      event = new ClipboardEvent('paste', {
+        clipboardData: transfer,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      });
+    } catch (err) {
+      return false;
     }
+    try {
+      root.dispatchEvent(event);
+    } catch (err) {
+      return false;
+    }
+    return event.defaultPrevented === true;
+  }
+
+  function insertDirectly(root, text) {
+    if (typeof document.execCommand !== 'function') return false;
+    try {
+      if (typeof root.focus === 'function') root.focus({ preventScroll: true });
+      return document.execCommand('insertText', false, text) === true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function insert(root, text, origin) {
+    if (replayAsPaste(root, text) === true) {
+      trace(origin + ' -> composer consumed ' + text.length + ' chars');
+      return;
+    }
+    var inserted = insertDirectly(root, text);
+    if (inserted) trace(origin + ' -> insertText fallback ' + text.length + ' chars');
+    else report(origin + ' -> BOTH PATHS FAILED (' + text.length + ' chars lost)');
+  }
+
+  /**
+   * The payload did not travel on the event. The paste gesture still counts as
+   * user activation, so the async clipboard API is the only remaining source.
+   */
+  function insertFromClipboard(root, origin) {
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+      report(origin + ' -> opaque payload, clipboard API unavailable');
+      return;
+    }
+    var pending;
+    try {
+      pending = navigator.clipboard.readText();
+    } catch (err) {
+      report(origin + ' -> clipboard read threw');
+      return;
+    }
+    Promise.resolve(pending).then(
+      function (clip) {
+        if (typeof clip === 'string' && clip !== '') insert(root, clip, origin + ' clipboard=' + clip.length);
+        else report(origin + ' -> clipboard empty');
+      },
+      function (err) {
+        report(origin + ' -> clipboard denied [' + ((err && err.name) || 'error') + ']');
+      },
+    );
   }
 
   document.addEventListener(
@@ -118,31 +232,33 @@
       if (PASTE_INPUT_TYPES[event.inputType] !== true) return;
       var root = composerRoot(event);
       if (root === null) return;
-      var source = event.dataTransfer || event.clipboardData || null;
-      var text = null;
-      if (source !== null && typeof source.getData === 'function') {
-        text = source.getData('text/plain');
-      }
-      if ((text === null || text === '') && typeof event.data === 'string') {
-        text = event.data;
-      }
-      if (typeof text === 'string' && text !== '') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        replayPaste(root, text);
-        return;
-      }
-      // Opaque event: read the clipboard ourselves. The paste gesture counts as
-      // user activation, so readText is permitted.
-      if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') return;
+      // Take the event before Lexical sees it: its branch would cancel the
+      // default action and then hand the payload-less InputEvent to a handler
+      // that cannot read it.
       event.preventDefault();
       event.stopImmediatePropagation();
-      navigator.clipboard.readText().then(
-        function (clip) {
-          replayPaste(root, clip);
-        },
-        function () {},
-      );
+      var origin = 'beforeinput/' + event.inputType;
+      var text = textFrom(event.dataTransfer) || textFrom(event.clipboardData);
+      if (text === '' && typeof event.data === 'string') text = event.data;
+      if (text === '') insertFromClipboard(root, origin + ' payload=0');
+      else insert(root, text, origin + ' payload=' + text.length);
+    },
+    true,
+  );
+
+  document.addEventListener(
+    'paste',
+    function (event) {
+      var root = composerRoot(event);
+      if (root === null) return;
+      // The normal event: the composer reads it itself, so only watch it.
+      if (textFrom(event.clipboardData) !== '') {
+        trace('paste -> left to the composer');
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      insertFromClipboard(root, 'paste payload=0');
     },
     true,
   );
