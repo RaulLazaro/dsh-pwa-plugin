@@ -60,6 +60,20 @@ class StubClipboardEvent extends StubEvent {
 class StubDataTransfer {
   constructor() {
     this.data = new Map();
+    this._files = [];
+    // Blob/File transfer, which is the only shape the composer accepts an image
+    // in: it walks clipboardData.items looking for item.kind === "file".
+    this.items = {
+      add: (file) => {
+        this._files.push(file);
+      },
+    };
+  }
+  get files() {
+    return this._files;
+  }
+  get types() {
+    return [...this.data.keys()];
   }
   setData(type, value) {
     this.data.set(type, String(value));
@@ -69,10 +83,56 @@ class StubDataTransfer {
   }
 }
 
+class StubFile {
+  constructor(parts, name, options = {}) {
+    this.parts = parts;
+    this.name = name;
+    this.type = options.type ?? '';
+    this.size = parts.length;
+  }
+}
+
+/** Enough of an element for the probe controls and the diagnostic panel. */
+function makeElement(tag) {
+  const listeners = new Map();
+  const el = {
+    tagName: String(tag).toUpperCase(),
+    textContent: '',
+    value: '',
+    rows: 0,
+    type: '',
+    style: { cssText: '', display: '' },
+    attributes: {},
+    children: [],
+    setAttribute: (name, value) => {
+      el.attributes[name] = String(value);
+    },
+    getAttribute: (name) => el.attributes[name] ?? null,
+    appendChild: (child) => {
+      el.children.push(child);
+      return child;
+    },
+    addEventListener: (type, fn) => {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(fn);
+    },
+    dispatch: (type, event) => {
+      for (const fn of listeners.get(type) ?? []) fn(event);
+      return event;
+    },
+    closest: () => null,
+    focus: () => {},
+  };
+  return el;
+}
+
 function makeDocument() {
   const handlers = new Map();
   return {
     handlers,
+    body: makeElement('body'),
+    createElement: (tag) => makeElement(tag),
+    querySelectorAll: () => [],
     addEventListener(type, fn) {
       if (!handlers.has(type)) handlers.set(type, []);
       handlers.get(type).push(fn);
@@ -137,12 +197,14 @@ async function load({
     KeyboardEvent: globalThis.KeyboardEvent,
     ClipboardEvent: globalThis.ClipboardEvent,
     DataTransfer: globalThis.DataTransfer,
+    File: globalThis.File,
   };
   globalThis.window = window;
   globalThis.document = document;
   globalThis.KeyboardEvent = StubKeyboardEvent;
   globalThis.ClipboardEvent = StubClipboardEvent;
   globalThis.DataTransfer = StubDataTransfer;
+  globalThis.File = StubFile;
   // Node 21+ defines a read-only `navigator`, so it must be replaced wholesale.
   Object.defineProperty(globalThis, 'navigator', {
     value: clipboard === null ? {} : { clipboard },
@@ -155,6 +217,7 @@ async function load({
   return {
     document,
     window,
+    body: document.body,
     root: makeRoot({ consume }),
     restore: () => Object.assign(globalThis, previous),
   };
@@ -170,6 +233,11 @@ function enter(overrides = {}) {
     cancelable: true,
     ...overrides,
   });
+}
+
+/** Let the async clipboard chain (readText -> read -> getType) finish. */
+async function settle(ticks = 6) {
+  for (let i = 0; i < ticks; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 test('a coarse pointer turns a plain Enter into a line break, not a send', async () => {
@@ -406,4 +474,172 @@ test('a well-formed paste event is left to the composer', async () => {
 
   assert.equal(native.defaultPrevented, false, 'the composer reads clipboardData itself');
   assert.equal(root.dispatched.length, 0, 'nothing may be re-dispatched');
+});
+
+test('an image on the clipboard is replayed as a file paste', async () => {
+  const blob = { size: 3, type: 'image/png' };
+  const item = { types: ['image/png'], getType: async () => blob };
+  const { document, root } = await load({
+    coarse: true,
+    clipboard: { readText: async () => '', read: async () => [item] },
+  });
+  const empty = new StubClipboardEvent('paste', {
+    clipboardData: null,
+    bubbles: true,
+    cancelable: true,
+  });
+  empty.target = root;
+  document.fire('paste', empty);
+  await settle();
+
+  assert.equal(root.dispatched.length, 1, 'the image must reach the composer as one paste');
+  const replayed = root.dispatched[0];
+  assert.equal(replayed.type, 'paste');
+  assert.equal(
+    replayed.clipboardData.files.length,
+    1,
+    'Android puts no image on clipboardData, so it has to be rebuilt as a file item'
+  );
+  assert.equal(replayed.clipboardData.files[0].type, 'image/png');
+  assert.equal(replayed.clipboardData.files[0].name, 'pasted.png');
+});
+
+test('a clipboard holding no image is reported, never guessed at', async () => {
+  const { document, root } = await load({
+    coarse: true,
+    clipboard: { readText: async () => '', read: async () => [] },
+  });
+  const empty = new StubClipboardEvent('paste', {
+    clipboardData: null,
+    bubbles: true,
+    cancelable: true,
+  });
+  empty.target = root;
+  document.fire('paste', empty);
+  await settle();
+
+  assert.equal(root.dispatched.length, 0, 'nothing may be dispatched when the clipboard holds no image');
+});
+
+function probeControl(body, name) {
+  return body.children.find((child) => child.attributes['data-dsh-pwa-probe'] === name);
+}
+
+function diagPanel(body) {
+  return body.children.find((child) => child.attributes['data-dsh-pwa-diagnostic'] !== undefined);
+}
+
+test('the probe arms a window and captures what the normal path ignores', async () => {
+  const { document, body, root } = await load({ coarse: true });
+  const button = probeControl(body, 'arm');
+  assert.ok(button, 'a coarse pointer must get the probe control');
+
+  const typing = new StubEvent('beforeinput', {
+    inputType: 'insertText',
+    data: 'a',
+    bubbles: true,
+    cancelable: true,
+  });
+  typing.target = root;
+  document.fire('beforeinput', typing);
+  assert.equal(
+    diagPanel(body),
+    undefined,
+    'ordinary typing must never raise the panel, which is what made the last trace unreadable'
+  );
+
+  button.dispatch('click', new StubEvent('click', { bubbles: true, cancelable: true }));
+  const panel = diagPanel(body);
+  assert.ok(panel, 'arming must show the panel');
+  assert.match(panel.textContent, /ARMED 25s/, 'the panel must say the window is open');
+
+  const pasted = new StubEvent('beforeinput', {
+    inputType: 'insertText',
+    data: 'b',
+    bubbles: true,
+    cancelable: true,
+  });
+  pasted.target = root;
+  document.fire('beforeinput', pasted);
+  assert.match(
+    diagPanel(body).textContent,
+    /bi insertText composer/,
+    'every input type is captured while the window is open'
+  );
+});
+
+test('the probe reports how many lines its window captured', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { document, body, root } = await load({ coarse: true });
+  probeControl(body, 'arm').dispatch('click', new StubEvent('click', { bubbles: true }));
+  const captured = new StubEvent('beforeinput', {
+    inputType: 'insertText',
+    data: 'x',
+    bubbles: true,
+    cancelable: true,
+  });
+  captured.target = root;
+  document.fire('beforeinput', captured);
+  t.mock.timers.tick(26000);
+
+  const text = diagPanel(body).textContent;
+  assert.match(text, /window closed: \d+ line\(s\) captured/);
+  assert.doesNotMatch(
+    text,
+    /window closed: 0 line/,
+    'the closing line must count the events the window saw, because zero is the finding'
+  );
+});
+
+test('a paste carrying markup is normalised to its plain text', async () => {
+  const { document, root } = await load({ coarse: true });
+  const transfer = new StubDataTransfer();
+  transfer.setData('text/plain', 'RICH');
+  transfer.setData('text/html', '<p>RICH</p>');
+  const rich = new StubClipboardEvent('paste', {
+    clipboardData: transfer,
+    bubbles: true,
+    cancelable: true,
+  });
+  rich.target = root;
+  document.fire('paste', rich);
+
+  assert.equal(rich.defaultPrevented, true, 'a paste that carries markup is taken over');
+  assert.equal(root.dispatched.length, 1);
+  const replayed = root.dispatched[0];
+  assert.equal(replayed.clipboardData.getData('text/plain'), 'RICH');
+  assert.deepEqual(
+    replayed.clipboardData.types,
+    ['text/plain'],
+    'only the text travels, so the paste cannot reach the editor as markup'
+  );
+});
+
+test('a paste that missed every editable is put back into the composer', async () => {
+  const { document, root } = await load({ coarse: true });
+  const transfer = new StubDataTransfer();
+  transfer.setData('text/plain', 'LOST');
+  const ok = new StubClipboardEvent('paste', {
+    clipboardData: transfer,
+    bubbles: true,
+    cancelable: true,
+  });
+  ok.target = root;
+  document.fire('paste', ok);
+  assert.equal(ok.defaultPrevented, false, 'the composer owns a paste aimed at it');
+  assert.equal(root.dispatched.length, 0);
+
+  // The clipboard overlay way: the editor is not under the event at all, so the
+  // composer never runs and the user sees nothing happen.
+  const stray = new StubClipboardEvent('paste', {
+    clipboardData: transfer,
+    bubbles: true,
+    cancelable: true,
+  });
+  stray.target = { tagName: 'BODY' };
+  document.fire('paste', stray);
+
+  assert.equal(stray.defaultPrevented, true, 'a stray paste is claimed');
+  assert.equal(root.dispatched.length, 1);
+  assert.equal(root.dispatched[0].clipboardData.getData('text/plain'), 'LOST');
 });
