@@ -1,5 +1,10 @@
-const CACHE_NAME = 'dsh-pwa-v4';
-const STATIC_CACHE = 'dsh-static-v4';
+// Both cache names are derived from the plugin version, which the host route
+// substitutes into this file on every request. A fixed name would leave an
+// installed client pinned to a previous pre-cache set until it cleared storage
+// by hand, so a version bump is the whole invalidation procedure.
+const VERSION = '__DSH_PWA_VERSION__';
+const CACHE_NAME = `dsh-pwa-${VERSION}`;
+const STATIC_CACHE = `dsh-static-${VERSION}`;
 
 // Assets to pre-cache on install
 const PRE_CACHE_URLS = [
@@ -136,6 +141,6 @@ self.addEventListener('message', (event) => {
     self.skipWaiting();
   }
   if (event.data && event.data.type === 'GET_VERSION') {
-    event.ports[0].postMessage({ version: CACHE_NAME });
+    event.ports[0].postMessage({ version: VERSION });
   }
 });

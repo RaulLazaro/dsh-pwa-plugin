@@ -6,18 +6,24 @@ If you discover a security vulnerability in this plugin, please report it respon
 
 ## Scope
 
-This plugin serves static files (service worker, manifest, icons) and injects a registration script into the HTML. It does not:
+This plugin serves static files (service worker, manifest, icons) and injects two inline `<script>` blocks into the HTML. It does not:
 
 - Handle user authentication
 - Process sensitive data
 - Make external network requests
-- Execute arbitrary code
+- Execute code supplied by a request
 
 ## Service Worker Security
 
-- The service worker only caches GET requests
-- API calls (`/api/*`, `/ws/*`) are never cached
-- The iframe sandbox restricts capabilities to `allow-scripts allow-same-origin allow-forms allow-popups`
+- Only `GET` requests are intercepted, and only responses that are same-origin with status 200 are cached (`src/sw.js`, the `fetch` handler)
+- Requests under `/api`, `/plugins`, `/ws` and `/hooks`, non-`http(s)` schemes, and WebSocket upgrades bypass the worker entirely (`src/sw.js`)
+- The worker is served from `/sw.js` and registered with scope `/`, so it controls the whole origin. Only one worker may own a scope; this plugin is that owner.
+
+## Injected Scripts
+
+The plugin appends two inline `<script>` blocks to `index.html` (`src/host/index.js`, section 4): the service-worker registration and the mobile composer fix. Inline script requires `script-src 'unsafe-inline'`, a nonce, or a hash if a Content-Security-Policy is set; a policy that forbids inline script will break both.
+
+The composer fix is inlined rather than served as a separate file on purpose: the worker answers non-HTML `GET`s cache-first, so an external script would be pinned to its first version.
 
 ## Updates
 
