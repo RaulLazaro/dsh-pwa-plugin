@@ -1,8 +1,8 @@
 /*
  * Mobile composer fixes, injected inline into index.html by src/host/index.js.
  *
- * Two Android-only defects in the shipped composer, both fixed here without
- * patching @deepseek-ai/dsh-client-ui-conversation:
+ * Android-only defects in the shipped composer, plus a probe for the one that
+ * is still open. Nothing here patches @deepseek-ai/dsh-client-ui-conversation.
  *
  * 1. No newline. The composer binds plain Enter to send and leaves only
  *    Shift+Enter to Lexical for a line break (client.js:16706 defers when
@@ -11,22 +11,30 @@
  *    keydown Lexical already understands, and the synthetic event cannot
  *    recurse because it carries shiftKey.
  *
- * 2. Paste does nothing. Chrome on Android delivers a long-press paste as
- *    beforeinput/insertFromPaste with the payload on the InputEvent's
- *    dataTransfer. Lexical's own beforeinput branch preventDefaults every
- *    input type (client.js:5501) and then dispatches PASTE_COMMAND with that
- *    InputEvent (client.js:5521-5523), but the composer's PASTE handler reads
- *    event.clipboardData only (client.js:16718) and returns false when there
- *    is none - so the text is dropped after the native insertion has already
- *    been cancelled. We take the event over and re-dispatch a real paste
- *    ClipboardEvent, which the composer's handler reads. When that synthetic
- *    event is rejected, or nothing readable came with the event, we fall back
- *    to document.execCommand('insertText'), which produces the real
- *    beforeinput/input pair Lexical does handle.
+ * 2. Paste reaching the page as beforeinput/insertFromPaste. Chrome delivers
+ *    that with the payload on the InputEvent's dataTransfer. Lexical's
+ *    beforeinput switch preventDefaults every input type before dispatching
+ *    (client.js:5501) and hands PASTE_COMMAND that InputEvent (client.js:5521),
+ *    but the composer's PASTE handler reads event.clipboardData only
+ *    (client.js:16718) and returns false when there is none - so the text is
+ *    dropped after the native insertion was already cancelled. We take the
+ *    event over and re-dispatch a real paste ClipboardEvent, which that handler
+ *    reads, falling back to document.execCommand('insertText') when the
+ *    synthetic event is rejected and to navigator.clipboard.readText() when the
+ *    event carries no payload at all.
  *
- * Both listeners are capture-phase and gated to coarse pointers, so desktop
- * behaviour is byte-for-byte unchanged. window.__DSH_FORCE_MOBILE_COMPOSER__
- * forces them on for testing.
+ * 3. OPEN: text committed through the IME (the Android clipboard overlay, the
+ *    Gboard quick-paste chip) still does not arrive. Those paths never dispatch
+ *    a paste event, so they are not the same mechanism. The watcher below
+ *    records what they DO produce - inputType, payload length, composition
+ *    flag, whether the payload rode on dataTransfer/clipboardData, and the
+ *    editor's text length before, during and after - including whether
+ *    Lexical cancelled the event (observed from a bubble-phase listener, which
+ *    runs after its root-level handler). It is a probe, not a fix: it exists to
+ *    name the branch that drops the text.
+ *
+ * Every listener is capture-phase and gated to coarse pointers, so desktop
+ * behaviour is unchanged. window.__DSH_FORCE_MOBILE_COMPOSER__ forces them on.
  */
 (function () {
   'use strict';
@@ -40,10 +48,77 @@
 
   var EDITOR_SELECTOR = '[data-lexical-editor="true"]';
   var PASTE_INPUT_TYPES = { insertFromPaste: true, insertFromPasteAsQuotation: true };
+  // Types the closed IME paths can produce. insertText/insertCompositionText are
+  // omitted on purpose: they fire once per keystroke, so they are traced only
+  // when they arrive with more than one character, which is what a clipboard
+  // commit looks like and a single key press never does.
+  var WATCHED_INPUT_TYPES = {
+    insertFromComposition: true,
+    insertFromDrop: true,
+    insertFromYank: true,
+    insertReplacementText: true,
+    insertTranspose: true,
+  };
 
   var traced = [];
   var panel = null;
   var panelTimer = null;
+  var vanishTimer = null;
+
+  function domLen(root) {
+    try {
+      return (root.textContent || '').length;
+    } catch (err) {
+      return -1;
+    }
+  }
+
+  function trace(line) {
+    traced.push(line);
+    if (traced.length > 6) traced.shift();
+    try {
+      console.log('[DSH PWA] ' + line);
+    } catch (err) {}
+  }
+
+  function showPanel() {
+    if (typeof document.createElement !== 'function' || document.body === null) return;
+    if (panel === null) {
+      panel = document.createElement('pre');
+      panel.setAttribute('data-dsh-pwa-diagnostic', '');
+      panel.style.cssText = [
+        'position:fixed',
+        'left:0',
+        'right:0',
+        'top:0',
+        'z-index:2147483647',
+        'margin:0',
+        'padding:6px 8px',
+        'max-height:22vh',
+        'overflow:hidden',
+        'background:rgba(15,23,42,0.96)',
+        'color:#e2e8f0',
+        'font:10px/1.35 ui-monospace,monospace',
+        'white-space:pre-wrap',
+        'word-break:break-word',
+        'pointer-events:none',
+        'border-bottom:1px solid #334155',
+      ].join(';');
+      document.body.appendChild(panel);
+    }
+    panel.textContent = traced.join('\n');
+    panel.style.display = 'block';
+    if (panelTimer !== null) clearTimeout(panelTimer);
+    panelTimer = setTimeout(function () {
+      if (panel !== null) panel.style.display = 'none';
+    }, 12000);
+  }
+
+  /** Trace a line and surface the panel: only used for events worth reading. */
+  function observe(line) {
+    trace(line);
+    showPanel();
+  }
 
   /** The composer's Lexical root, or null when the event is not aimed at it. */
   function composerRoot(event) {
@@ -60,51 +135,6 @@
   // advertises that with aria-haspopup="menu" on the input (InputBar.module.css).
   function menuOpen(root) {
     return root.getAttribute('aria-haspopup') === 'menu';
-  }
-
-  // Every paste branch records one line. Nothing is shown to the user unless a
-  // branch fails, so a working phone never sees a panel and a broken one says
-  // exactly which step lost the text.
-  function trace(line) {
-    traced.push(line);
-    if (traced.length > 6) traced.shift();
-    try {
-      console.log('[DSH PWA] ' + line);
-    } catch (err) {}
-  }
-
-  function report(line) {
-    trace(line);
-    if (typeof document.createElement !== 'function' || document.body === null) return;
-    if (panel === null) {
-      panel = document.createElement('pre');
-      panel.setAttribute('data-dsh-pwa-diagnostic', '');
-      panel.style.cssText = [
-        'position:fixed',
-        'left:0',
-        'right:0',
-        'bottom:0',
-        'z-index:2147483647',
-        'margin:0',
-        'padding:8px 10px',
-        'max-height:38vh',
-        'overflow:hidden',
-        'background:rgba(15,23,42,0.96)',
-        'color:#e2e8f0',
-        'font:11px/1.5 ui-monospace,monospace',
-        'white-space:pre-wrap',
-        'word-break:break-word',
-        'pointer-events:none',
-        'border-top:1px solid #334155',
-      ].join(';');
-      document.body.appendChild(panel);
-    }
-    panel.textContent = traced.join('\n');
-    panel.style.display = 'block';
-    if (panelTimer !== null) clearTimeout(panelTimer);
-    panelTimer = setTimeout(function () {
-      if (panel !== null) panel.style.display = 'none';
-    }, 20000);
   }
 
   document.addEventListener(
@@ -190,13 +220,15 @@
   }
 
   function insert(root, text, origin) {
+    var before = domLen(root);
     if (replayAsPaste(root, text) === true) {
       trace(origin + ' -> composer consumed ' + text.length + ' chars');
       return;
     }
     var inserted = insertDirectly(root, text);
-    if (inserted) trace(origin + ' -> insertText fallback ' + text.length + ' chars');
-    else report(origin + ' -> BOTH PATHS FAILED (' + text.length + ' chars lost)');
+    var after = domLen(root);
+    if (inserted) trace(origin + ' -> insertText fallback ' + text.length + ' chars (dom ' + before + '->' + after + ')');
+    else observe(origin + ' -> BOTH PATHS FAILED (' + text.length + ' chars lost, dom ' + before + ')');
   }
 
   /**
@@ -205,23 +237,23 @@
    */
   function insertFromClipboard(root, origin) {
     if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
-      report(origin + ' -> opaque payload, clipboard API unavailable');
+      observe(origin + ' -> opaque payload, clipboard API unavailable');
       return;
     }
     var pending;
     try {
       pending = navigator.clipboard.readText();
     } catch (err) {
-      report(origin + ' -> clipboard read threw');
+      observe(origin + ' -> clipboard read threw');
       return;
     }
     Promise.resolve(pending).then(
       function (clip) {
         if (typeof clip === 'string' && clip !== '') insert(root, clip, origin + ' clipboard=' + clip.length);
-        else report(origin + ' -> clipboard empty');
+        else observe(origin + ' -> clipboard empty');
       },
       function (err) {
-        report(origin + ' -> clipboard denied [' + ((err && err.name) || 'error') + ']');
+        observe(origin + ' -> clipboard denied [' + ((err && err.name) || 'error') + ']');
       },
     );
   }
@@ -229,21 +261,53 @@
   document.addEventListener(
     'beforeinput',
     function (event) {
-      if (PASTE_INPUT_TYPES[event.inputType] !== true) return;
       var root = composerRoot(event);
       if (root === null) return;
-      // Take the event before Lexical sees it: its branch would cancel the
-      // default action and then hand the payload-less InputEvent to a handler
-      // that cannot read it.
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      var origin = 'beforeinput/' + event.inputType;
-      var text = textFrom(event.dataTransfer) || textFrom(event.clipboardData);
-      if (text === '' && typeof event.data === 'string') text = event.data;
-      if (text === '') insertFromClipboard(root, origin + ' payload=0');
-      else insert(root, text, origin + ' payload=' + text.length);
+      var type = event.inputType;
+
+      if (PASTE_INPUT_TYPES[type] === true) {
+        // Take the event before Lexical sees it: its branch would cancel the
+        // default action and then hand the payload-less InputEvent to a handler
+        // that cannot read it.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        var origin = 'beforeinput/' + type;
+        var text = textFrom(event.dataTransfer) || textFrom(event.clipboardData);
+        if (text === '' && typeof event.data === 'string') text = event.data;
+        if (text === '') insertFromClipboard(root, origin + ' payload=0');
+        else insert(root, text, origin + ' payload=' + text.length);
+        return;
+      }
+
+      var data = typeof event.data === 'string' ? event.data : '';
+      var notable = WATCHED_INPUT_TYPES[type] === true || data.length > 1;
+      if (!notable) return;
+      event.__dshWatched = true;
+      trace(
+        'bi ' + type + ' len=' + data.length + ' comp=' + (event.isComposing === true ? 1 : 0) +
+          ' dt=' + (event.dataTransfer ? 1 : 0) + ' cd=' + (event.clipboardData ? 1 : 0) +
+          ' dom0=' + domLen(root),
+      );
+      showPanel();
     },
     true,
+  );
+
+  /*
+   * Same event, bubble phase, on document: Lexical listens on the root element,
+   * so by the time this runs it has had its say. preventDefault here means
+   * Lexical took the text over and will insert it itself; a cancelled event with
+   * no change to the editor is exactly the signature of the silent drop.
+   */
+  document.addEventListener(
+    'beforeinput',
+    function (event) {
+      if (event.__dshWatched !== true) return;
+      var root = composerRoot(event);
+      if (root === null) return;
+      trace('   after: prevented=' + (event.defaultPrevented === true ? 1 : 0) + ' dom=' + domLen(root));
+    },
+    false,
   );
 
   document.addEventListener(
@@ -259,6 +323,29 @@
       event.preventDefault();
       event.stopImmediatePropagation();
       insertFromClipboard(root, 'paste payload=0');
+    },
+    true,
+  );
+
+  // Whether the text survived the round trip into the editor's DOM, which is
+  // what separates "the event was never delivered" from "it was delivered and
+  // then rejected".
+  document.addEventListener(
+    'input',
+    function (event) {
+      if (PASTE_INPUT_TYPES[event.inputType] === true) return;
+      var root = composerRoot(event);
+      if (root === null) return;
+      var data = typeof event.data === 'string' ? event.data : '';
+      if (event.__dshWatched !== true && data.length < 2) return;
+      var after = domLen(root);
+      observe('in ' + event.inputType + ' len=' + data.length + ' dom=' + after);
+      if (vanishTimer !== null) clearTimeout(vanishTimer);
+      vanishTimer = setTimeout(function () {
+        var later = domLen(root);
+        if (later < after) observe('   dom ' + after + ' -> ' + later + ' EDITOR DROPPED IT');
+        else trace('   dom held at ' + later);
+      }, 700);
     },
     true,
   );
