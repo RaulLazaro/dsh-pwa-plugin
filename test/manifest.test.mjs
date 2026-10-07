@@ -53,3 +53,32 @@ test('theme and background colors are valid hex', () => {
     assert.match(manifest[key], /^#[0-9a-f]{6}$/i, `${key} must be a #rrggbb color`);
   }
 });
+
+test('the manifest declares the surface Chrome uses for a richer install', () => {
+  assert.deepEqual(manifest.display_override, ['standalone', 'minimal-ui']);
+  assert.equal(manifest.launch_handler?.client_mode, 'navigate-existing');
+  assert.equal(manifest.lang, 'en');
+  assert.equal(manifest.dir, 'ltr');
+});
+
+test('a monochrome icon is declared for themed launchers', () => {
+  const monochrome = manifest.icons.filter((i) => i.purpose === 'monochrome');
+  assert.equal(monochrome.length, 1, 'the launcher tints a monochrome icon with the wallpaper colours');
+  assert.equal(monochrome[0].type, 'image/svg+xml');
+  assert.ok(existsSync(join(publicDir, monochrome[0].src.replace(/^\//, ''))), 'the monochrome source is missing');
+});
+
+test('no icon points at the dsh /favicon.svg mark', () => {
+  // dsh serves /favicon.svg (black, for the light scheme) and /favicon-dark.svg;
+  // the built-in manifest pointed at the first one, which is how the app ended up
+  // wearing dsh's own flat mark instead of this plugin's icon set.
+  assert.equal(
+    manifest.icons.some((i) => i.src === '/favicon.svg' || i.src === '/favicon-dark.svg'),
+    false,
+    'dsh\'s own favicon is not this app icon'
+  );
+  assert.ok(
+    manifest.icons.some((i) => i.src === '/icons/icon.svg'),
+    'the transparent whale must be the vector icon'
+  );
+});

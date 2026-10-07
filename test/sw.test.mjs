@@ -128,11 +128,15 @@ test('install pre-caches the static list one URL at a time and calls skipWaiting
   assert.deepEqual(m.adds, [
     '/',
     '/manifest.webmanifest',
-    '/favicon.svg',
+    '/icons/icon.svg',
+    '/icons/icon-monochrome.svg',
+    '/icons/icon-32.png',
     '/icons/icon-192.png',
-    '/icons/icon-192-maskable.png',
     '/icons/icon-512.png',
+    '/icons/icon-192-maskable.png',
     '/icons/icon-512-maskable.png',
+    '/apple-touch-icon.png',
+    '/favicon.ico',
   ]);
   assert.equal(calls.skipWaiting, 1, 'install must activate immediately (skipWaiting)');
 });
@@ -145,7 +149,7 @@ test('a pre-cache URL that fails does not stop the worker installing', async () 
   let pending;
   handlers.install({ waitUntil(p) { pending = p; } });
   await pending;
-  assert.equal(m.adds.length, 7, 'every URL is still attempted');
+  assert.equal(m.adds.length, 11, 'every URL is still attempted');
   assert.equal(calls.skipWaiting, 1, 'the worker must still take over');
 });
 
@@ -250,6 +254,30 @@ test('the sign-in page names where the code comes from and accepts a pasted URL'
   assert.match(source, /dshw-token\.ps1/, 'the page must name the command that prints the code');
   assert.match(source, /\[\?&\]token=\(\[A-Za-z0-9_-\]\{20,\}\)/, 'a pasted URL must be accepted, not only a bare code');
   assert.match(source, /__NOTE__/, 'the page carries a note slot for the rejected-code message');
+});
+
+test('the sign-in page claims a remembered device before falling back to a code', () => {
+  const source = readFileSync(join(root, 'src', 'sw.js'), 'utf-8');
+  const page = /const SIGN_IN_PAGE = `([\s\S]*?)`;/.exec(source);
+  assert.ok(page, 'the sign-in page template must be found in the worker source');
+  const html = page[1];
+  assert.match(html, /'\/dsh-pwa\/device\/claim'/, 'the page must exchange the device key for a session');
+  assert.match(html, /indexedDB\.open/, 'the device key lives in the app own storage, not in the URL');
+  assert.match(html, /id="forget"/, 'a device that is no longer trusted must be forgettable');
+  assert.match(html, /\/dsh-pwa\/auth-state/, 'the page must be able to say which failure this is');
+  // A minted cookie is only worth having if the fence accepts it, so the page has
+  // to ask for the fence's verdict before redirecting. It cannot get that by
+  // fetching '/': that is not an HTML request, so it takes the cache-first path and
+  // the cached shell answers 200 whatever the fence would say.
+  const checkedAt = html.indexOf('cookieValid');
+  const redirectAt = html.indexOf("window.location.replace('/')");
+  assert.ok(checkedAt !== -1, 'the page must verify the minted session actually works');
+  assert.ok(redirectAt !== -1, 'the page must redirect once it does');
+  assert.ok(checkedAt < redirectAt, 'the check must come before the redirect');
+  assert.ok(
+    !html.includes("fetch('/', { credentials"),
+    'the cookie test must not read the cached shell: ask the host probe instead'
+  );
 });
 
 test('a failing cache put never breaks the HTML response', async () => {

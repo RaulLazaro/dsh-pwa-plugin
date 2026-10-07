@@ -10,11 +10,15 @@ const STATIC_CACHE = `dsh-static-${VERSION}`;
 const PRE_CACHE_URLS = [
   '/',
   '/manifest.webmanifest',
-  '/favicon.svg',
+  '/icons/icon.svg',
+  '/icons/icon-monochrome.svg',
+  '/icons/icon-32.png',
   '/icons/icon-192.png',
-  '/icons/icon-192-maskable.png',
   '/icons/icon-512.png',
-  '/icons/icon-512-maskable.png'
+  '/icons/icon-192-maskable.png',
+  '/icons/icon-512-maskable.png',
+  '/apple-touch-icon.png',
+  '/favicon.ico'
 ];
 
 // Offline fallback page
@@ -63,6 +67,8 @@ const SIGN_IN_PAGE = `
     input { width: 100%; box-sizing: border-box; padding: 0.7rem; border-radius: 0.4rem; border: 1px solid #334155; background: #1e293b; color: #e2e8f0; font-size: 1rem; }
     button { margin-top: 0.75rem; width: 100%; padding: 0.7rem; border: 0; border-radius: 0.4rem; background: #2563eb; color: #fff; font-size: 1rem; }
     .note { color: #f87171; min-height: 1.25rem; margin: 0; }
+    .hint { color: #64748b; font-size: 0.8rem; margin: 0.6rem 0 0; }
+    #forget { background: transparent; border: 1px solid #334155; color: #94a3b8; font-size: 0.85rem; padding: 0.45rem; }
   </style>
 </head>
 <body>
@@ -74,12 +80,123 @@ const SIGN_IN_PAGE = `
       <input id="t" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="code or URL with token=">
       <button type="submit">Sign in</button>
     </form>
+    <button id="forget" type="button" hidden>Forget this device</button>
+    <p id="device" class="hint"></p>
   </div>
   <script>
   (function () {
     var form = document.getElementById('f');
     var input = document.getElementById('t');
     var note = document.getElementById('note');
+    var deviceLine = document.getElementById('device');
+    var forget = document.getElementById('forget');
+    var DB_NAME = 'dsh-pwa';
+    var STORE = 'device';
+
+    function openStore(mode) {
+      return new Promise(function (resolve) {
+        var request = indexedDB.open(DB_NAME, 1);
+        request.onupgradeneeded = function () {
+          if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
+        };
+        request.onsuccess = function () {
+          var db = request.result;
+          if (!db.objectStoreNames.contains(STORE)) { resolve(null); return; }
+          try { resolve(db.transaction(STORE, mode).objectStore(STORE)); } catch (err) { resolve(null); }
+        };
+        request.onerror = function () { resolve(null); };
+      });
+    }
+
+    function readKey() {
+      return openStore('readonly').then(function (store) {
+        if (!store) return '';
+        return new Promise(function (resolve) {
+          var get = store.get('key');
+          get.onsuccess = function () { resolve(typeof get.result === 'string' ? get.result : ''); };
+          get.onerror = function () { resolve(''); };
+        });
+      });
+    }
+
+    function clearKey() {
+      return openStore('readwrite').then(function (store) {
+        if (!store) return false;
+        return new Promise(function (resolve) {
+          var del = store.delete('key');
+          del.onsuccess = function () { resolve(true); };
+          del.onerror = function () { resolve(false); };
+        });
+      });
+    }
+
+    // The code-rejected message is the more useful one, so it is never replaced.
+    function say(message) {
+      if (note && note.textContent === '') note.textContent = message;
+    }
+
+    // A minted cookie is only worth having if the fence accepts it, so this asks
+    // the host for its verdict. It cannot test the cookie by fetching '/': that is
+    // not an HTML request, so it takes the cache-first path, and the app shell is
+    // already cached - a cached 200 would report success for a cookie the fence
+    // rejects, and the redirect below would loop. The probe route is uncached and
+    // answers with the fence's own validation.
+    function works() {
+      return fetch('/dsh-pwa/auth-state?t=' + Date.now(), {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'x-dsh-pwa-probe': '1' }
+      })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (state) { return !!(state && state.cookieValid === true); })
+        .catch(function () { return false; });
+    }
+
+    function claim(key) {
+      return fetch('/dsh-pwa/device/claim', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key: key })
+      }).then(function (response) { return response.ok ? works() : false; });
+    }
+
+    // One line saying which of the three failures this is: no cookie, a cookie
+    // the fence refused, or a host that cannot mint one at all.
+    function describe() {
+      return fetch('/dsh-pwa/auth-state', { headers: { 'x-dsh-pwa-probe': '1' }, cache: 'no-store' })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (state) {
+          if (!state || !deviceLine) return;
+          var parts = [];
+          if (state.authority) parts.push('host ' + state.authority);
+          parts.push(state.cookiePresent ? 'a session cookie is present but was refused' : 'no session cookie on this device');
+          if (state.canMint === false) parts.push('this host cannot mint one');
+          deviceLine.textContent = 'Diagnosis: ' + parts.join(', ') + '.';
+        })
+        .catch(function () {});
+    }
+
+    if (forget) {
+      forget.addEventListener('click', function () {
+        clearKey().then(function () {
+          forget.hidden = true;
+          say('This device was forgotten. Sign in with a code.');
+        });
+      });
+    }
+
+    readKey().then(function (key) {
+      if (!key) { describe(); return; }
+      say('Checking this device...');
+      claim(key).then(function (ok) {
+        if (ok) { window.location.replace('/'); return; }
+        forget.hidden = false;
+        say('This device is no longer trusted. Sign in with a code.');
+        describe();
+      });
+    });
+
     form.addEventListener('submit', function (event) {
       event.preventDefault();
       var raw = input.value.trim();

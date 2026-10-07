@@ -88,16 +88,28 @@ function verify() {
 
       allPassed = check(
         'Manifest: icons',
-        Array.isArray(manifest.icons) && manifest.icons.length >= 4,
-        `Expected ≥4 icon entries (any + maskable × 2 sizes), found ${manifest.icons?.length ?? 0}`
+        Array.isArray(manifest.icons) && manifest.icons.length >= 6,
+        `Expected at least 6 icon entries (any + maskable x 2 sizes + monochrome), found ${manifest.icons?.length ?? 0}`
       ) && allPassed;
 
-      // Check that both 'any' and 'maskable' purposes are present
+      // Check that 'any', 'maskable' and 'monochrome' purposes are all present
       const purposes = new Set(manifest.icons.map(i => i.purpose).flat());
       allPassed = check(
         'Manifest: maskable icon purpose',
         purposes.has('maskable'),
         'No icon with purpose "maskable" found'
+      ) && allPassed;
+
+      allPassed = check(
+        'Manifest: monochrome icon purpose',
+        purposes.has('monochrome'),
+        'No icon with purpose "monochrome" found (themed launchers need one)'
+      ) && allPassed;
+
+      allPassed = check(
+        'Manifest: no dsh favicon as an app icon',
+        !manifest.icons.some(i => i.src === '/favicon.svg' || i.src === '/favicon-dark.svg'),
+        'The manifest must not reuse dsh\'s own favicon as the app icon'
       ) && allPassed;
     } catch (err) {
       error(`Manifest parsing failed: ${err.message}`);
@@ -108,6 +120,10 @@ function verify() {
   // Check icon files exist on disk
   const iconsDir = join(rootDir, 'public', 'icons');
   const requiredIcons = [
+    'icon.svg',
+    'icon-maskable.svg',
+    'icon-monochrome.svg',
+    'icon-32.png',
     'icon-192.png',
     'icon-192-maskable.png',
     'icon-512.png',
@@ -119,6 +135,13 @@ function verify() {
       `Icon: ${icon}`,
       existsSync(join(iconsDir, icon)),
       `Missing ${icon} in public/icons/`
+    ) && allPassed;
+  }
+  for (const [name, file] of [['apple-touch-icon.png', join(rootDir, 'public', 'apple-touch-icon.png')], ['favicon.ico', join(rootDir, 'public', 'favicon.ico')]]) {
+    allPassed = check(
+      `Icon: ${name}`,
+      existsSync(file),
+      `Missing public/${name} (Chrome needs a raster icon for the site identity)`
     ) && allPassed;
   }
 

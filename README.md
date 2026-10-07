@@ -9,11 +9,17 @@ PWA plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) that adds 
 - **Automatic updates** — silently activates new versions
 - **Offline-first** for static assets
 - **Sign in from inside the app** — a locked-out navigation shows a code box instead of dsh's plain-text 401
+- **One sign-in per device** — a device that signed in once keeps a key of its own and
+  renews its own session, so the launch code is needed once, not on every launch
+- **Swipe-back guard** — an Android edge swipe no longer throws you out of the app
+  mid-conversation; a second swipe inside two seconds still leaves, deliberately
 - **Mobile composer fix** — on a phone, Enter inserts a newline instead of sending, and a paste whose payload the composer cannot see is recovered (from the clipboard API, or replayed from the one `insertText` the Android keyboard's clipboard panel sends)
 - **Keyboard stays down** — on a phone the on-screen keyboard only opens for a tap on
   the text area itself, so **New session** and **Send** stop covering the transcript
   with it (Android; the reason is under [Limitations](#limitations))
-- **Official DSH whale icon** — derived from the upstream SVG favicon
+- **Transparent DSH whale icon** — the official mark on transparent ground, for the app
+  icon, the notification badge and the favicon, with a maskable variant and a
+  single-colour silhouette for the manifest's `monochrome` slot
 
 ## Installation
 
@@ -78,10 +84,16 @@ This reads the official `public/favicon.svg` and produces:
 
 | File | Size | Purpose |
 |------|------|---------|
-| `icon-192.png` | 192×192 | Regular (any) |
-| `icon-192-maskable.png` | 192×192 | Maskable (20% safe zone) |
-| `icon-512.png` | 512×512 | Regular (any) |
-| `icon-512-maskable.png` | 512×512 | Maskable (20% safe zone) |
+| `icons/icon.svg` | 50×50 viewBox | Transparent whale mark, scalable |
+| `icons/icon-maskable.svg` | 50×50 viewBox | Maskable source |
+| `icons/icon-monochrome.svg` | 50×50 viewBox | Single-colour silhouette (manifest `monochrome`) |
+| `icons/icon-32.png` | 32×32 | Favicon |
+| `icons/icon-192.png` | 192×192 | Regular (any) |
+| `icons/icon-512.png` | 512×512 | Regular (any) |
+| `icons/icon-192-maskable.png` | 192×192 | Maskable (20% safe zone) |
+| `icons/icon-512-maskable.png` | 512×512 | Maskable (20% safe zone) |
+| `apple-touch-icon.png` | 180×180 | iOS home screen |
+| `favicon.ico` | 16/32/48 | Classic favicon; PNG entries packed by hand, no dependency |
 
 ## How It Works
 
@@ -117,6 +129,32 @@ whole URL carrying `?token=` — and repeats the same exchange.
   gets a `401` for `/`) can still install a new worker — otherwise the one worker that
   could rescue it would never activate.
 
+## Trusted devices (sign in once)
+
+The code rotates with every `dsh web` process, so remembering it would be useless.
+The session cookie is the opposite: it is signed with a credential that survives
+restarts, but it is bound to one host and port and the app has no way to obtain a new
+one once it is gone. That is the whole reason a phone asks again.
+
+A device key closes it:
+
+1. While the app is open and signed in it asks the host for a device key
+   (`POST /dsh-pwa/device`) and stores it in the app's own IndexedDB. The host keeps
+   only a SHA-256 hash of it.
+2. When the app is later locked out, the sign-in page finds the key and offers it
+   (`POST /dsh-pwa/device/claim`). The host mints a fresh session cookie using dsh's
+   own contract — same name, same payload, same signature, signed with the durable
+   browser-session secret — and the page then fetches `/` to confirm the fence really
+   accepts it before redirecting.
+3. Only if that fails does the page fall back to the code box.
+
+A device key is a durable credential, so enrollment requires an existing session: the
+route checks the cookie itself, because the fence gates only the index document. The
+key is compared in constant time, only its hash is stored, and at most 10 devices are
+kept. **Forget this device** on the sign-in page drops the key; the host-side record
+can be dropped with `POST /dsh-pwa/device/forget`. If dsh ever changes its cookie
+contract the mint fails closed — the phone is asked for a code, exactly as before.
+
 ## Caching Strategy
 
 | Resource Type | Strategy | Description |
@@ -136,10 +174,13 @@ whole URL carrying `?token=` — and repeats the same exchange.
   those paths answer `200` with no cookie while `/` answers `401`). That is what makes
   the app installable at all, and it is why the sign-in page can reach an
   unauthenticated client. It exposes only static assets.
-- The worker's sign-in page can only help a client that has a worker installed, which
-  needs one successful page load in that browser first. A brand-new install in a
-  browser that has never signed in still needs one signed-in page load there (the
-  printed URL), after which every launch is covered.
+- A device key only exists after one signed-in app load: an app cannot enroll while it
+  is locked out. A brand-new install in a browser that has never signed in still needs
+  one signed-in page load there (the printed URL), after which every launch is covered.
+  Clearing site data removes the key along with the cookie.
+- The swipe-back guard is Chromium-shaped: it intercepts the traversal through the
+  Navigation API where that exists and falls back to `popstate`, and it installs only
+  in standalone display mode, so a browser tab keeps normal history.
 - Image paste from an Android keyboard's clipboard panel needs the Chromium flag
   described under [Android](#android). Chrome updates can reset flags, so a
   crossed-out image item is the first thing to check if that ever regresses.
@@ -156,12 +197,16 @@ dsh-pwa-plugin/
 ├── src/
 │   ├── host/
 │   │   └── index.js          # Host plugin (Node.js)
+│   ├── device.js             # Cookie contract + trusted-device store
 │   ├── mobile-composer.js    # The mobile composer fix (inlined into the app HTML)
+│   ├── pwa-client.js         # Swipe-back guard + device enrollment (inlined)
 │   └── sw.js                 # Service Worker
 ├── public/
 │   ├── manifest.webmanifest  # PWA Manifest
 │   ├── favicon.svg           # DSH whale icon (same as upstream)
-│   └── icons/                # PWA icons (maskable + regular)
+│   ├── favicon.ico           # 16/32/48, hand-packed
+│   ├── apple-touch-icon.png  # 180x180 for iOS
+│   └── icons/                # PWA icons (maskable + monochrome + regular)
 ├── scripts/
 │   ├── generate-icons.js     # Icon generator (sharp)
 │   ├── install.js            # Verification script
@@ -198,9 +243,20 @@ Zero-dependency suite on Node's built-in runner (`node --test`):
   while a focus on the one they are typing in is left alone, a tap on the text area
   re-arms the keyboard where a tap on any other composer button closes it, and the
   module ships no diagnostic overlay.
-- `test/host.test.mjs` — route registration (sw, manifest, 4 icons, version),
-  response headers, the index-HTML script injection, and the effect cleanup
+- `test/host.test.mjs` — route registration (sw, manifest, 9 icon assets, version, auth
+  probe, the three device routes), response headers, the index-HTML script injection,
+  enrollment / claim / forget driven against a temporary home, and the effect cleanup
   used on HMR unmounts.
+- `test/device.test.mjs` — the cookie identity pinned against dsh's own derivation, a
+  minted cookie accepted by the same contract the fence uses (and rejected for another
+  authority, another secret, a tampered payload, a rewritten version or an expired
+  window), the credentials-file reader, and the device store's cap, lookup and
+  corrupt-file path.
+- `test/icons.test.mjs` — every icon's real dimensions and format, parsed out of the
+  PNG/ICO bytes rather than trusted.
+- `test/pwa-client.test.mjs` — the back-gesture guard against a fake window: the
+  sentinel is armed, one gesture is counted once across both interception paths, a
+  second swipe inside the window lets the exit through, and a browser tab is untouched.
 
 ## License
 
