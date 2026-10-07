@@ -96,6 +96,26 @@ This reads the official `public/favicon.svg` and produces:
 | `apple-touch-icon.png` | 180×180 | iOS home screen |
 | `favicon.ico` | 16/32/48 | Classic favicon; PNG entries packed by hand, no dependency |
 
+### After regenerating: bump the icon revision
+
+Every icon URL in the manifest carries a `?rev=` query, and that is not cosmetic. Chrome
+treats the manifest's `icons` array as effectively `Cache-Control: immutable`: when the
+field is unchanged it does not download the icon bytes again, so artwork regenerated under
+the same URL never reaches anyone who already installed the app. The home-screen icon and
+the header of every notification keep the old art, and no amount of restarting the server
+changes that. Changing the URL is Chrome's documented trigger for an icon update, so a
+regeneration is three edits together:
+
+1. bump `ICON_REV` in `test/manifest.test.mjs`,
+2. bump the `?rev=` on all six `src` entries in `public/manifest.webmanifest`,
+3. refresh the `ARTWORK` hash map in that test from the newly generated files.
+
+`test/manifest.test.mjs` fails if the set carries two different revisions, and fails again
+when the bytes on disk stop matching the map - which is what forces the bump next time.
+The manifest is read from disk per request, so this needs no restart, and the phone picks
+the new URL up through the normal web-app update. Background:
+[Chrome's web app update guidance](https://developer.chrome.com/blog/improvements-to-web-app-updates).
+
 ## How It Works
 
 1. The host plugin serves `/sw.js`, `/manifest.webmanifest`, and icon files
@@ -173,6 +193,11 @@ contract the mint fails closed — the phone is asked for a code, exactly as bef
 - Requires HTTPS to work (except localhost)
 - Service worker cannot cache API calls
 - Updates require a page reload (automatic after detection)
+- The installed launcher icon is baked at install. Chrome will not re-download icon bytes
+  while the manifest's `icons` field is unchanged, so regenerated artwork needs a new icon
+  URL (the `?rev=` query) before an app that is already installed shows it; see
+  [After regenerating](#after-regenerating-bump-the-icon-revision). The server can serve
+  the new art correctly and the phone will still show the old icon until that URL moves.
 - The app document stays behind dsh's token fence, and the plugin's own routes
   (`/sw.js`, `/manifest.webmanifest`, `/icons/*`, `/dsh-pwa/version`) are not fenced —
   exact routes registered through `webServer.register` bypass it (measured 2026-10-07:

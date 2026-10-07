@@ -195,7 +195,8 @@ test('the three committed SVGs carry the glyph, the right fills and no XML trap'
 test('every manifest icon resolves to a committed file with real bytes', () => {
   const manifest = JSON.parse(readFileSync(join(root, 'public', 'manifest.webmanifest'), 'utf-8'));
   for (const icon of manifest.icons) {
-    const file = join(root, 'public', icon.src.replace(/^\//, ''));
+    // The src carries the revision query the manifest test pins; the file is its path.
+    const file = join(root, 'public', new URL(icon.src, 'https://dsh.test').pathname.replace(/^\//, ''));
     const bytes = readFileSync(file);
     assert.ok(bytes.length > 100, `${icon.src} is empty`);
   }
