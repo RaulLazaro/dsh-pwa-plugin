@@ -53,5 +53,28 @@
       "purpose": "maskable"
     }
   ],
+  "screenshots": [
+    {
+      "src": "/screenshots/app-chat.png?rev=1",
+      "sizes": "824x1830",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "A conversation with the agent"
+    },
+    {
+      "src": "/screenshots/app-trajectory.png?rev=1",
+      "sizes": "824x1830",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Every step of the run, as a trajectory"
+    },
+    {
+      "src": "/screenshots/app-context.png?rev=1",
+      "sizes": "824x1830",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Where the context went: tokens, timing and cost"
+    }
+  ],
   "prefer_related_applications": false
 }

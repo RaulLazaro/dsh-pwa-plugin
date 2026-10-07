@@ -1,7 +1,7 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname, basename, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DEVICE_COOKIE_MAX_AGE_DAYS,
@@ -149,6 +149,56 @@ export function apply(ctx) {
       serveStatic('/apple-touch-icon.png',        join(publicDir, 'apple-touch-icon.png'),           'image/png'),
       serveStatic('/favicon.ico',                 join(publicDir, 'favicon.ico'),                    'image/x-icon'),
     ];
+
+    // 3b. Serve the install-card screenshots.
+    //     Chrome fetches these itself while it renders the richer install dialog,
+    //     before any page of the app is on screen, so they come from the same
+    //     per-request directory read as the rest of the static files here. One
+    //     prefix route covers the directory, and the requested name is matched
+    //     against a fresh listing of it, which is what makes path traversal
+    //     impossible: there is no path arithmetic left to get wrong.
+    const screenshotsDir = join(publicDir, 'screenshots');
+    const SCREENSHOT_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
+    const SCREENSHOT_PREFIX = '/screenshots/';
+    const disposeScreenshots = webServer.register({
+      kind: 'prefix',
+      path: '/screenshots',
+      handler: async (req, res) => {
+        try {
+          // The route table matches on the pathname but hands the handler the
+          // original request, query string and all.
+          const rawPath = String(req.url ?? '').split('?')[0];
+          const rel = rawPath.startsWith(SCREENSHOT_PREFIX) ? rawPath.slice(SCREENSHOT_PREFIX.length) : '';
+          let name = '';
+          try {
+            name = rel.length > 0 ? decodeURIComponent(rel) : '';
+          } catch {
+            name = '';
+          }
+          // Two gates, and the second is the real one: the name must be a bare
+          // file name (basename also rejects a backslash, which join treats as a
+          // separator on Windows) and it must appear in the directory listing, so
+          // nothing outside public/screenshots can be opened.
+          const type = SCREENSHOT_TYPES[extname(name).toLowerCase()];
+          if (name.length === 0 || basename(name) !== name || type === undefined || !readdirSync(screenshotsDir).includes(name)) {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          const content = readFileSync(join(screenshotsDir, name));
+          res.writeHead(200, {
+            'Content-Type': type,
+            'Cache-Control': 'public, max-age=86400',
+            'Content-Length': content.length
+          });
+          res.end(content);
+        } catch (err) {
+          ctx.logger.warn(`[DSH PWA] screenshots serve error: ${err.message}`);
+          res.writeHead(404);
+          res.end();
+        }
+      }
+    });
 
     // 4. Inject SW registration + the client-side fixes into index.html.
     //    Both fixes are inlined rather than served as a <script src>: the service
@@ -420,8 +470,8 @@ ${source}
       }
     });
 
-    ctx.logger.info('[DSH PWA] loaded — service worker + manifest + icons + auth probe + device trust active');
+    ctx.logger.info('[DSH PWA] loaded — service worker + manifest + icons + screenshots + auth probe + device trust active');
 
-    return () => { disposeSw(); disposeManifest(); disposeIcons.forEach(d => d()); disposeTap(); disposeVersion(); disposeAuthState(); disposeDevice(); disposeClaim(); disposeForget(); };
+    return () => { disposeSw(); disposeManifest(); disposeIcons.forEach(d => d()); disposeScreenshots(); disposeTap(); disposeVersion(); disposeAuthState(); disposeDevice(); disposeClaim(); disposeForget(); };
   });
 }

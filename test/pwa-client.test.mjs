@@ -227,3 +227,175 @@ test('installing twice does not stack a second sentinel', () => {
   runInContext(source, env.sandbox);
   assert.equal(env.pushed.length, before, 'a second install must be inert');
 });
+
+/**
+ * The Android polish section: the root overscroll guard, the safe-area insets on
+ * the surfaces this plugin owns, and storage persistence.
+ *
+ * It gets its own small sandbox because it needs things the guard's harness has
+ * no reason to model - a head, a body that keeps its children, document-level
+ * listeners - and because keeping them apart means a change here can never
+ * quietly rewrite the guard's expectations.
+ */
+function makePolishEnv({ standalone = true, share = null, storage = null } = {}) {
+  const head = {
+    children: [],
+    appendChild(el) {
+      el.parentNode = this;
+      head.children.push(el);
+    },
+  };
+  const body = [];
+  const winEvents = {};
+  const docEvents = {};
+
+  const element = (tagName) => {
+    const handlers = {};
+    return {
+      tagName,
+      style: {},
+      textContent: '',
+      innerHTML: '',
+      title: '',
+      type: '',
+      parentNode: null,
+      attrs: {},
+      handlers,
+      setAttribute(name, value) {
+        this.attrs[name] = value;
+      },
+      getAttribute(name) {
+        return this.attrs[name];
+      },
+      addEventListener(type, fn) {
+        (handlers[type] ??= []).push(fn);
+      },
+      click() {
+        for (const fn of handlers.click ?? []) fn({});
+      },
+    };
+  };
+
+  const document = {
+    head,
+    activeElement: null,
+    body: {
+      appendChild(el) {
+        el.parentNode = this;
+        body.push(el);
+      },
+      removeChild(el) {
+        el.parentNode = null;
+      },
+    },
+    createElement: (tag) => element(String(tag).toUpperCase()),
+    querySelector: () => null,
+    addEventListener(type, fn) {
+      (docEvents[type] ??= []).push(fn);
+    },
+  };
+
+  const win = {
+    document,
+    location: { href: 'https://vastus.tail4417fc.ts.net:3080/?dshSession=abc' },
+    navigator: { standalone: false },
+    innerHeight: 915,
+    history: { state: null, pushState() {}, back() {} },
+    matchMedia: (query) => ({
+      matches: standalone === true && (query.includes('standalone') || query.includes('fullscreen')),
+    }),
+    addEventListener(type, fn) {
+      (winEvents[type] ??= []).push(fn);
+    },
+    setTimeout() {
+      return 0;
+    },
+    requestAnimationFrame(fn) {
+      fn();
+    },
+  };
+  if (share !== null) win.navigator.share = share;
+  if (storage !== null) win.navigator.storage = storage;
+
+  const sandbox = {
+    window: win,
+    document,
+    navigator: win.navigator,
+    location: win.location,
+    console: { log() {}, warn() {} },
+  };
+  createContext(sandbox);
+  runInContext(source, sandbox);
+
+  return {
+    win,
+    document,
+    head,
+    body,
+    winEvents,
+    docEvents,
+    fire(type, event) {
+      for (const fn of winEvents[type] ?? []) fn(event);
+    },
+    styles() {
+      return head.children.filter((el) => el.tagName === 'STYLE');
+    },
+  };
+}
+
+test('the root scroller gets the overscroll guard the shell never set', () => {
+  const env = makePolishEnv();
+  const styles = env.styles();
+  assert.equal(styles.length, 1, 'exactly one style element is injected');
+  assert.equal(styles[0].textContent, 'html,body{overscroll-behavior-y:contain}');
+  assert.equal(styles[0].attrs['data-dsh-pwa'], '', 'and it is marked as ours');
+});
+
+test('the back-guard toast clears the gesture bar, not just the bottom edge', () => {
+  const env = makePolishEnv();
+  env.win.history.state = null;
+  env.fire('popstate', { state: null });
+  const toast = env.body.find((el) => el.textContent === 'Swipe back again to leave DSH');
+  assert.ok(toast, 'the absorbed swipe is still explained');
+  assert.match(toast.style.cssText, /safe-area-inset-bottom/, `${toast.style.cssText} must clear the bar`);
+});
+
+test('the polish appends no floating controls of its own', () => {
+  // A share control lived here and was removed: dsh keeps no session id in the
+  // URL, so the most it could ever hand over was the bare origin. This asserts
+  // the page is left clean even when the browser offers navigator.share, so
+  // re-introducing one has to be deliberate.
+  const env = makePolishEnv({ share: () => Promise.resolve() });
+  assert.equal(env.body.length, 0, 'the client must not append controls to the body');
+});
+
+test('persistence is asked for on the first gesture, never at load, and only once', async () => {
+  const calls = [];
+  const env = makePolishEnv({
+    storage: {
+      persist() {
+        calls.push('persist');
+        return Promise.resolve(true);
+      },
+      estimate() {
+        return Promise.resolve({ usage: 11, quota: 99 });
+      },
+    },
+  });
+  assert.equal(calls.length, 0, 'loading the page must not ask');
+  env.fire('pointerdown', {});
+  assert.equal(calls.length, 1, 'the first real gesture asks');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(env.win.__dshPwaStorage.persisted, true);
+  assert.equal(env.win.__dshPwaStorage.quota, 99, 'the estimate comes along for diagnosis');
+  env.fire('pointerdown', {});
+  env.fire('keydown', {});
+  assert.equal(calls.length, 1, 'one ask per page, however many gestures');
+});
+
+test('a refused grant is recorded rather than retried', async () => {
+  const env = makePolishEnv({ storage: { persist: () => Promise.resolve(false) } });
+  env.fire('touchstart', {});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(env.win.__dshPwaStorage.persisted, false);
+});

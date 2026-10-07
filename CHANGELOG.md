@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.4.0
+
+- Install card: the manifest now declares three phone-width `screenshots` (a
+  conversation, the trajectory of a run, and the context panel), captured at 412x915
+  with a device pixel ratio of 2, so Chrome has something to show in the richer install
+  dialog instead of a bare name. They are served by a new `/screenshots` prefix route
+  that opens a name only when a fresh listing of `public/screenshots` contains it, so no
+  path can escape the directory. **A new route is host code, so this release needs a dsh
+  restart** before the install card can fetch the images; the manifest itself is read
+  per request, so until then the URLs 404 and Chrome falls back to the plain prompt.
+- Android polish, all in the page client: the root scroller gets
+  `overscroll-behavior-y: contain` - the app shell sets it only on inner scrollers, so a
+  scroll that reached the top could still trigger Chrome's pull-to-refresh and reload
+  the app mid-conversation. The plugin's own surface (the guard's toast) offsets by
+  `env(safe-area-inset-bottom, 0px)`. `viewport-fit=cover` was deliberately NOT added:
+  `safe-area-inset` appears nowhere in the frontend, so `cover` would slide dsh's own
+  composer under the gesture bar with nothing compensating.
+- Storage: on the first real gesture - never at load, once per page - the client asks for
+  `navigator.storage.persist()` and records `{persisted, usage, quota}` on
+  `window.__dshPwaStorage`, so Chrome is asked not to evict the cache and the device key
+  behind "one sign-in per device".
+- Tests: 121, up from 113. The route inventory and the HMR-dispose count include the new
+  route, and the manifest suite reads each screenshot's own IHDR to check the advertised
+  `sizes` and pins the hash of each reviewed capture.
+- Note: there are no entries here for 1.2.0 - 1.3.1; those releases were tagged without
+  one. This entry does not backfill them.
+
 ## 1.1.6
 
 - Mobile composer: the on-screen keyboard no longer comes up for anything but a tap on

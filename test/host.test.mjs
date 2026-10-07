@@ -54,7 +54,7 @@ test('exports the expected bundle identity (name + webServer inject)', () => {
   assert.ok(inject.includes('webServer'), 'webServer must be injected: every route handler uses ctx.webServer');
 });
 
-test('apply registers the full route set as exact matches', () => {
+test('apply registers the full route set', () => {
   const { ctx, routes } = makeCtx();
   apply(ctx);
   assert.deepEqual(
@@ -75,10 +75,15 @@ test('apply registers the full route set as exact matches', () => {
       '/icons/icon-monochrome.svg',
       '/icons/icon.svg',
       '/manifest.webmanifest',
+      '/screenshots',
       '/sw.js',
     ]
   );
-  for (const { kind } of routes.values()) assert.equal(kind, 'exact');
+  // Every route is an exact match but the install-card screenshots, which cover
+  // a whole directory and are therefore registered as a prefix.
+  for (const [path, { kind }] of routes) {
+    assert.equal(kind, path === '/screenshots' ? 'prefix' : 'exact', `${path} registered as ${kind}`);
+  }
 });
 
 test('/sw.js is served with no-cache and the version token substituted', async () => {
@@ -208,7 +213,7 @@ test('the effect cleanup disposes every route and the tap (HMR unmount)', () => 
   apply(ctx);
   assert.equal(cleanups.length, 1, 'apply must register exactly one effect');
   assert.equal(typeof cleanups[0], 'function', 'cordis expects the effect to return its disposer');
-  assert.equal(routes.size, 16);
+  assert.equal(routes.size, 17);
   cleanups[0]();
   assert.equal(routes.size, 0, 'all routes must be unregistered');
   assert.equal(taps.length, 0, 'the index tap must be removed');
@@ -550,4 +555,58 @@ test('an enrolled device claims a minted cookie and can be forgotten', async () 
   } finally {
     home.restore();
   }
+});
+
+test('the screenshots route serves a listed file and refuses everything else', async () => {
+  const { ctx, routes } = makeCtx();
+  apply(ctx);
+  const route = routes.get('/screenshots');
+  assert.equal(route.kind, 'prefix', 'one prefix route covers the whole directory');
+  const handler = route.handler;
+
+  // A name the directory really lists: served with the type taken from its
+  // extension, and the bytes that are on disk rather than a re-encoded copy.
+  const onDisk = readFileSync(join(root, 'public', 'screenshots', 'app-chat.png'));
+  const ok = makeRes();
+  await handler({ url: '/screenshots/app-chat.png' }, ok);
+  assert.equal(ok.code, 200);
+  assert.equal(ok.headers['Content-Type'], 'image/png');
+  assert.equal(ok.headers['Cache-Control'], 'public, max-age=86400');
+  assert.equal(ok.headers['Content-Length'], onDisk.length);
+  assert.deepEqual(ok.body, onDisk);
+
+  // Chrome stores the manifest's URL, ?rev= and all, so the query must not matter.
+  const versioned = makeRes();
+  await handler({ url: '/screenshots/app-chat.png?rev=1' }, versioned);
+  assert.equal(versioned.code, 200, 'the ?rev= in the manifest must not break the fetch');
+
+  // The fresh directory listing is the only authority. A name outside it, or one
+  // that is not a bare file name, must 404 - with no bytes attached.
+  const refused = [
+    '/screenshots/missing.png',
+    '/screenshots/APP-CHAT.PNG',
+    '/screenshots/app-chat.svg',
+    '/screenshots/%2e%2e%2fmanifest.webmanifest',
+    '/screenshots/..%2Fmanifest.webmanifest',
+    '/screenshots/..\\manifest.webmanifest',
+    '/screenshots/%2e%2e/manifest.webmanifest',
+    '/screenshots/app-chat.png/../manifest.webmanifest',
+    '/screenshots/icons/icon-192.png',
+    '/screenshots/',
+    '/screenshots',
+  ];
+  for (const url of refused) {
+    const res = makeRes();
+    await handler({ url }, res);
+    assert.equal(res.code, 404, `${url} must not be served`);
+    assert.equal(res.body, undefined, `${url} must not leak a body`);
+  }
+});
+
+test('the screenshots route survives a request with no url at all', async () => {
+  const { ctx, routes } = makeCtx();
+  apply(ctx);
+  const res = makeRes();
+  await routes.get('/screenshots').handler({}, res);
+  assert.equal(res.code, 404);
 });

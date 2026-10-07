@@ -131,3 +131,60 @@ test('no icon points at the dsh /favicon.svg mark', () => {
   );
   assert.ok(paths.includes('/icons/icon.svg'), 'the DSH mark must be the vector icon');
 });
+
+/** Reads a PNG's real pixel size from its IHDR, so `sizes` cannot be a guess. */
+function pngSize(file) {
+  const buffer = readFileSync(file);
+  assert.deepEqual(
+    [...buffer.subarray(0, 8)],
+    [137, 80, 78, 71, 13, 10, 26, 10],
+    `${basename(file)} is not a PNG`
+  );
+  assert.equal(buffer.toString('ascii', 12, 16), 'IHDR', `${basename(file)} has no IHDR`);
+  return `${buffer.readUInt32BE(16)}x${buffer.readUInt32BE(20)}`;
+}
+
+// What each screenshot hashed to when it was captured and reviewed. Pinned
+// because the captures come from a live authenticated app: a later re-capture
+// against whatever session happens to be open would otherwise be committed
+// silently. Bumping the ?rev= in the manifest goes with changing these.
+const SHOT_ARTWORK = {
+  '/screenshots/app-chat.png': 'cd6cb858257dd6adadb5bc0db6e1edc8f307fdb8ae8a75369f78089be877b757',
+  '/screenshots/app-trajectory.png': '16ab32ba3f2066d477975a6e2465980f63654a48fd2416aabbb27deb7fbc0e60',
+  '/screenshots/app-context.png': '3299350d22f719ebe65220fe41ef9a41f8393e0a32485f7f3ff945a8950c6401',
+};
+
+test('the install card screenshots exist at the size the manifest advertises', () => {
+  const shots = manifest.screenshots;
+  assert.ok(Array.isArray(shots), 'screenshots is what buys the richer install dialog');
+  assert.ok(shots.length >= 1 && shots.length <= 8, `the spec allows 1-8 screenshots, found ${shots.length}`);
+
+  const narrow = [];
+  for (const shot of shots) {
+    assert.match(shot.type, /^image\/(png|jpeg)$/, `${shot.src} must be PNG or JPEG, nothing else is allowed`);
+    const file = onDisk(shot.src);
+    assert.ok(existsSync(file), `${shot.src} is in the manifest but missing from public/`);
+    assert.equal(shot.sizes, pngSize(file), `${shot.src} advertises a size its own bytes do not have`);
+
+    const [width, height] = shot.sizes.split('x').map(Number);
+    assert.ok(width >= 320 && width <= 3840, `${shot.src} is ${width}px wide, outside the allowed 320-3840`);
+    assert.ok(height >= 320 && height <= 3840, `${shot.src} is ${height}px tall, outside the allowed 320-3840`);
+    assert.ok(height > width, `${shot.src} must be portrait: a phone install shows the narrow form factor`);
+    if (shot.form_factor === 'narrow') narrow.push(height / width);
+  }
+
+  assert.ok(narrow.length >= 1, 'no screenshot declares form_factor "narrow"');
+  for (const ratio of narrow) {
+    assert.ok(Math.abs(ratio - narrow[0]) < 0.001, 'screenshots of one form factor must share an aspect ratio');
+  }
+});
+
+test('the committed screenshots are the reviewed captures, and every pin is used', () => {
+  const declared = manifest.screenshots.map((shot) => iconPath(shot.src)).sort();
+  assert.deepEqual(declared, Object.keys(SHOT_ARTWORK).sort(), 'a screenshot and its pin must be added or removed together');
+
+  for (const [path, expected] of Object.entries(SHOT_ARTWORK)) {
+    const actual = createHash('sha256').update(readFileSync(join(publicDir, path.replace(/^\//, '')))).digest('hex');
+    assert.equal(actual, expected, `${path} changed on disk: review the new capture before committing it`);
+  }
+});

@@ -21,6 +21,18 @@ PWA plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) that adds 
   neutral ground (the `#151517` base and `#f9fafb` label colour the app UI itself
   uses), for the app icon, the favicon and the apple touch icon, with a maskable
   variant and a single-colour silhouette for the manifest's `monochrome` slot
+- **A real install card** — `description` plus three phone-width `screenshots` (a
+  conversation, the trajectory of a run, and the context panel), served from
+  `/screenshots/`, which is what switches Chrome from the compact "Add to home screen"
+  prompt to the full card
+- **No accidental pull-to-refresh** — the root scroller gets
+  `overscroll-behavior-y: contain`, which the app shell sets only on inner scrollers, so
+  a scroll that reaches the top can no longer reload the app mid-conversation
+- **Safe-area aware** — the surfaces this plugin owns (its toast) offset by
+  `env(safe-area-inset-bottom, 0px)`, so they clear the Android gesture bar
+- **Durable storage** — on the first real gesture, once per page, the client asks for
+  `navigator.storage.persist()`, so Chrome is asked not to evict the cache (and the
+  device key) under storage pressure
 
 ## Installation
 
@@ -199,11 +211,17 @@ contract the mint fails closed — the phone is asked for a code, exactly as bef
   [After regenerating](#after-regenerating-bump-the-icon-revision). The server can serve
   the new art correctly and the phone will still show the old icon until that URL moves.
 - The app document stays behind dsh's token fence, and the plugin's own routes
-  (`/sw.js`, `/manifest.webmanifest`, `/icons/*`, `/dsh-pwa/version`) are not fenced —
-  exact routes registered through `webServer.register` bypass it (measured 2026-10-07:
-  those paths answer `200` with no cookie while `/` answers `401`). That is what makes
+  (`/sw.js`, `/manifest.webmanifest`, `/icons/*`, `/screenshots/*`, `/dsh-pwa/version`)
+  are not fenced — routes registered through `webServer.register` bypass it (measured
+  2026-10-07: those paths answer `200` with no cookie while `/` answers `401`, and the
+  screenshots route is matched by the same table). That is what makes
   the app installable at all, and it is why the sign-in page can reach an
-  unauthenticated client. It exposes only static assets.
+  unauthenticated client. It exposes only static assets: the screenshots handler opens a
+  name only when a fresh listing of `public/screenshots` contains it.
+- A regenerated screenshot needs a new URL for the same reason a regenerated icon does
+  (Chrome treats an unchanged `screenshots` field as unchanged), so the manifest entries
+  carry a `?rev=` query, and `test/manifest.test.mjs` pins the hash of each reviewed
+  capture: a re-capture is a deliberate change, not a surprise in a diff.
 - A device key only exists after one signed-in app load: an app cannot enroll while it
   is locked out. A brand-new install in a browser that has never signed in still needs
   one signed-in page load there (the printed URL), after which every launch is covered.
@@ -229,14 +247,15 @@ dsh-pwa-plugin/
 │   │   └── index.js          # Host plugin (Node.js)
 │   ├── device.js             # Cookie contract + trusted-device store
 │   ├── mobile-composer.js    # The mobile composer fix (inlined into the app HTML)
-│   ├── pwa-client.js         # Swipe-back guard + device enrollment (inlined)
+│   ├── pwa-client.js         # Swipe-back guard, device enrollment, Android polish (inlined)
 │   └── sw.js                 # Service Worker
 ├── public/
 │   ├── manifest.webmanifest  # PWA Manifest
 │   ├── favicon.svg           # DSH whale icon (same as upstream)
 │   ├── favicon.ico           # 16/32/48, hand-packed
 │   ├── apple-touch-icon.png  # 180x180 for iOS
-│   └── icons/                # PWA icons (maskable + monochrome + regular)
+│   ├── icons/                # PWA icons (maskable + monochrome + regular)
+│   └── screenshots/          # Install-card captures (824x1830, phone at DPR 2)
 ├── scripts/
 │   ├── generate-icons.js     # Icon generator (sharp)
 │   ├── install.js            # Verification script
@@ -255,7 +274,9 @@ npm test
 Zero-dependency suite on Node's built-in runner (`node --test`):
 
 - `test/manifest.test.mjs` — manifest required fields, icon densities (regular +
-  maskable at 192/512) and that every icon file exists on disk.
+  maskable at 192/512), that every icon file exists on disk, and that each install-card
+  screenshot exists at the exact pixel size it advertises (read out of its own IHDR)
+  with the hash of the reviewed capture pinned.
 - `test/sw.test.mjs` — the service worker evaluated against a fake `self`:
   install/activate cache lifecycle (including an install where a pre-cache URL
   fails), the bypass rules (non-GET, non-HTTP schemes, `/api`, `/plugins`, `/ws`,
@@ -273,10 +294,10 @@ Zero-dependency suite on Node's built-in runner (`node --test`):
   while a focus on the one they are typing in is left alone, a tap on the text area
   re-arms the keyboard where a tap on any other composer button closes it, and the
   module ships no diagnostic overlay.
-- `test/host.test.mjs` — route registration (sw, manifest, 9 icon assets, version, auth
-  probe, the three device routes), response headers, the index-HTML script injection,
-  enrollment / claim / forget driven against a temporary home, and the effect cleanup
-  used on HMR unmounts.
+- `test/host.test.mjs` — route registration (sw, manifest, 9 icon assets, the
+  screenshots prefix, version, auth probe, the three device routes), response headers,
+  the index-HTML script injection, enrollment / claim / forget driven against a
+  temporary home, and the effect cleanup used on HMR unmounts.
 - `test/device.test.mjs` — the cookie identity pinned against dsh's own derivation, a
   minted cookie accepted by the same contract the fence uses (and rejected for another
   authority, another secret, a tampered payload, a rewritten version or an expired
@@ -287,6 +308,10 @@ Zero-dependency suite on Node's built-in runner (`node --test`):
 - `test/pwa-client.test.mjs` — the back-gesture guard against a fake window: the
   sentinel is armed, one gesture is counted once across both interception paths, a
   second swipe inside the window lets the exit through, and a browser tab is untouched.
+  The Android polish runs in its own sandbox: the root overscroll rule, the safe-area
+  offset on the guard's toast, that no floating controls are appended even when the
+  browser offers `navigator.share`, and persistence asked for exactly once, on the first
+  gesture, never at load.
 
 ## License
 
