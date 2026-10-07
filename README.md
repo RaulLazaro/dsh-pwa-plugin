@@ -145,8 +145,12 @@ A device key closes it:
 2. When the app is later locked out, the sign-in page finds the key and offers it
    (`POST /dsh-pwa/device/claim`). The host mints a fresh session cookie using dsh's
    own contract — same name, same payload, same signature, signed with the durable
-   browser-session secret — and the page then fetches `/` to confirm the fence really
-   accepts it before redirecting.
+   browser-session secret — and the page then confirms it through the host's own probe
+   (`GET /dsh-pwa/auth-state` with `x-dsh-pwa-probe: 1`), which reports `cookieValid`
+   from the same check the fence uses. A page-side `fetch('/')` cannot answer that
+   question: it sends `accept: */*`, so the fence serves the app shell and never
+   exercises the HTML branch. The page redirects only once the probe reports a valid
+   cookie.
 3. Only if that fails does the page fall back to the code box.
 
 A device key is a durable credential, so enrollment requires an existing session: the
