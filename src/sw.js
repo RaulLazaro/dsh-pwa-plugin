@@ -68,7 +68,7 @@ const SIGN_IN_PAGE = `
 <body>
   <div class="card">
     <h1>Sign in to DSH</h1>
-    <p class="note">__NOTE__</p>
+    <p id="note" class="note">__NOTE__</p>
     <p>On the machine running dsh, run <code>dshw-token.ps1</code> and paste the code below - the whole URL works too.</p>
     <form id="f">
       <input id="t" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="code or URL with token=">
@@ -86,7 +86,7 @@ const SIGN_IN_PAGE = `
       var match = /[?&]token=([A-Za-z0-9_-]{20,})/.exec(raw);
       var code = match ? match[1] : raw;
       if (!/^[A-Za-z0-9_-]{20,}$/.test(code)) {
-        note.textContent = 'That does not look like a code. It is the long random string after "token=".';
+        if (note) note.textContent = 'That does not look like a code. It is the long random string after "token=".';
         return;
       }
       window.location.href = '/?token=' + encodeURIComponent(code);

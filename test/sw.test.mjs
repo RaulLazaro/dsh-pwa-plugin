@@ -229,6 +229,22 @@ test('a navigation that carried a rejected code says so', async () => {
   assert.match(body, /not accepted/, 'a rejected code must not look like nothing happened');
 });
 
+test('every element the sign-in page looks up by id is declared in its markup', async () => {
+  // A shipped version of this page called getElementById('note') on a <p> that
+  // only had a class: a rejected code threw a TypeError and said nothing at all.
+  // A missing id is invisible to a text assertion, so cross-check them instead.
+  const source = readFileSync(join(root, 'src', 'sw.js'), 'utf-8');
+  const page = /const SIGN_IN_PAGE = `([\s\S]*?)`;/.exec(source);
+  assert.ok(page, 'the sign-in page template must be found in the worker source');
+  const html = page[1];
+  const lookedUp = [...html.matchAll(/getElementById\('([^']+)'\)/g)].map((match) => match[1]);
+  assert.ok(lookedUp.length >= 3, `expected the page to look up its controls, saw ${lookedUp.length}`);
+  const declared = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
+  for (const id of lookedUp) {
+    assert.ok(declared.has(id), `the page looks up #${id} but never declares it`);
+  }
+});
+
 test('the sign-in page names where the code comes from and accepts a pasted URL', async () => {
   const source = readFileSync(join(root, 'src', 'sw.js'), 'utf-8');
   assert.match(source, /dshw-token\.ps1/, 'the page must name the command that prints the code');
