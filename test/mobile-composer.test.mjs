@@ -11,6 +11,12 @@ import { readFile } from 'node:fs/promises';
 
 const EDITOR_SELECTOR = '[data-lexical-editor="true"]';
 
+// node:test's MockTimers replaces globalThis.setTimeout for the length of a
+// test that enables it, and the drain below runs before such a test ever ticks,
+// so it has to hold the real timer.
+const realSetTimeout = globalThis.setTimeout;
+const drainRealTimers = () => new Promise((resolve) => realSetTimeout(resolve, 0));
+
 class StubEvent {
   constructor(type, init = {}) {
     Object.assign(
@@ -131,6 +137,7 @@ function makeDocument() {
   const handlers = new Map();
   return {
     handlers,
+    activeElement: null,
     body: makeElement('body'),
     createElement: (tag) => makeElement(tag),
     querySelectorAll: () => [],
@@ -155,16 +162,14 @@ function makeDocument() {
   };
 }
 
-function makeRoot({ haspopup = null, visible = true, consume = false, pasteLands = true, pasteDropAfter = 0 } = {}) {
+function makeRoot({ Element = null, haspopup = null, visible = true, consume = false, pasteLands = true, pasteDropAfter = 0 } = {}) {
   const dispatched = [];
-  const root = {
+  const root = Object.assign(Element === null ? {} : new Element(), {
     id: '',
     dispatched,
     textContent: '',
     offsetParent: visible ? {} : null,
-    getAttribute: (attr) => (attr === 'aria-haspopup' ? haspopup : null),
     closest: (selector) => (selector === EDITOR_SELECTOR ? root : null),
-    focus: () => {},
     dispatchEvent: (event) => {
       dispatched.push(event);
       // The composer's PASTE handler calls preventDefault on the branch that
@@ -186,7 +191,8 @@ function makeRoot({ haspopup = null, visible = true, consume = false, pasteLands
       }
       return true;
     },
-  };
+  });
+  if (haspopup !== null) root.attributes['aria-haspopup'] = haspopup;
   return root;
 }
 
@@ -196,21 +202,56 @@ async function load({
   coarse = true,
   forced = false,
   clipboard = null,
+  virtualKeyboard = null,
   consume = false,
   pasteLands = true,
   pasteDropAfter = 0,
   execCommand = null,
 } = {}) {
+  // Let any timer the previous test's module instance left behind fire while
+  // the globals it was loaded with are still installed. Its deferred hide()
+  // reads the ambient navigator when it fires, so without this it would land on
+  // THIS test's spy and be read as this test's keyboard.
+  await drainRealTimers();
+  await drainRealTimers();
   const document = makeDocument();
   if (execCommand !== null) document.execCommand = execCommand;
   const window = {
     matchMedia: () => ({ matches: coarse }),
     __DSH_FORCE_MOBILE_COMPOSER__: forced,
   };
+  // A fresh HTMLElement per load: the fix patches the prototype, so a shared
+  // class would stack one wrapper per test and each test would measure the
+  // previous one's patches too.
+  const focusLog = [];
+  const blurLog = [];
+  class Element {
+    constructor() {
+      this.attributes = {};
+    }
+    focus(options) {
+      focusLog.push({ element: this, options: options ?? null });
+      document.activeElement = this;
+    }
+    blur() {
+      blurLog.push(this);
+      if (document.activeElement === this) document.activeElement = null;
+    }
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    }
+    getAttribute(name) {
+      return this.attributes[name] ?? null;
+    }
+    removeAttribute(name) {
+      delete this.attributes[name];
+    }
+  }
   const previous = {
     window: globalThis.window,
     document: globalThis.document,
     navigator: globalThis.navigator,
+    HTMLElement: globalThis.HTMLElement,
     KeyboardEvent: globalThis.KeyboardEvent,
     ClipboardEvent: globalThis.ClipboardEvent,
     DataTransfer: globalThis.DataTransfer,
@@ -218,13 +259,17 @@ async function load({
   };
   globalThis.window = window;
   globalThis.document = document;
+  globalThis.HTMLElement = Element;
   globalThis.KeyboardEvent = StubKeyboardEvent;
   globalThis.ClipboardEvent = StubClipboardEvent;
   globalThis.DataTransfer = StubDataTransfer;
   globalThis.File = StubFile;
+  const api = {};
+  if (clipboard !== null) api.clipboard = clipboard;
+  if (virtualKeyboard !== null) api.virtualKeyboard = virtualKeyboard;
   // Node 21+ defines a read-only `navigator`, so it must be replaced wholesale.
   Object.defineProperty(globalThis, 'navigator', {
-    value: clipboard === null ? {} : { clipboard },
+    value: api,
     configurable: true,
     writable: true,
   });
@@ -234,8 +279,11 @@ async function load({
   return {
     document,
     window,
+    Element,
+    focusLog,
+    blurLog,
     body: document.body,
-    root: makeRoot({ consume, pasteLands, pasteDropAfter }),
+    root: makeRoot({ Element, consume, pasteLands, pasteDropAfter }),
     restore: () => Object.assign(globalThis, previous),
   };
 }
@@ -821,4 +869,137 @@ test('the composer ships no diagnostic probe or trace panel', async () => {
     return attrs['data-dsh-pwa-probe'] !== undefined || attrs['data-dsh-pwa-diagnostic'] !== undefined;
   });
   assert.deepEqual(overlaid, [], 'a coarse pointer must get no diagnostics overlay');
+});
+
+// ---- 4. the keyboard comes up for a tap on the text area, nothing else -----
+//
+// What these pin down: dsh re-focuses the composer when the session changes
+// (tapping New session) and from every composer button's own mousedown, and on
+// Android each of those raises the soft keyboard over half the screen. A focus
+// call cannot be read on its own, so the rule is the composer's own focus
+// state: a call on an editor the user is not in is not theirs, a call on the
+// one they are typing in is.
+
+/** A press on a composer button that is not the text area (send, stop, +, model). */
+function composerButton() {
+  const card = {};
+  return { closest: (selector) => (selector === '[data-composer-card]' ? card : null) };
+}
+
+/** A press anywhere else in the app. */
+function outsideTarget() {
+  return { closest: () => null };
+}
+
+function press(document, target) {
+  const event = new StubEvent('pointerdown', { bubbles: true, cancelable: true });
+  event.target = target;
+  document.fire('pointerdown', event);
+  return event;
+}
+
+test('a programmatic focus of a composer the user is not in never raises the keyboard', async () => {
+  const { document, root, focusLog } = await load({ coarse: true });
+
+  root.focus();
+
+  assert.equal(root.getAttribute('inputmode'), 'none', 'inputmode=none is the attribute a browser honours');
+  assert.equal(
+    root.getAttribute('virtualkeyboardpolicy'),
+    'manual',
+    'and the browser switch goes on beside it, for the engine that reads that one instead',
+  );
+  assert.equal(focusLog.length, 1, 'the focus itself must still happen');
+  assert.equal(document.activeElement, root, 'the caret still lands in the editor');
+});
+
+test('a quiet focus asks the keyboard to go away once the focus has landed', async () => {
+  const hides = [];
+  const { root } = await load({ coarse: true, virtualKeyboard: { hide: () => hides.push('hide') } });
+
+  root.focus();
+  await settle(2);
+
+  assert.deepEqual(hides, ['hide'], 'the attributes are a hint; hide() is the guarantee');
+});
+
+test('focus calls on the composer the user is typing in are left alone', async () => {
+  const hides = [];
+  const { document, root } = await load({ coarse: true, virtualKeyboard: { hide: () => hides.push('hide') } });
+
+  document.activeElement = root;
+  root.focus();
+  await settle(2);
+
+  assert.equal(
+    root.getAttribute('inputmode'),
+    null,
+    'Lexical re-focusing its own root mid-sentence must not silence the keyboard',
+  );
+  assert.deepEqual(hides, [], 'and must not close it either');
+});
+
+test('a tap on the text area gives the keyboard back', async () => {
+  const { document, root, focusLog, blurLog } = await load({ coarse: true });
+
+  root.focus();
+  assert.equal(root.getAttribute('inputmode'), 'none', 'quiet to start with');
+
+  press(document, root);
+
+  assert.equal(root.getAttribute('inputmode'), null, 'the attribute is cleared before the browser taps');
+  assert.equal(root.getAttribute('virtualkeyboardpolicy'), null);
+  assert.equal(blurLog.length, 1, 'the quiet focus is taken down first');
+  assert.equal(focusLog.length, 2, 'and the focus is restarted inside the tap, which is what opens the keyboard');
+  assert.deepEqual(focusLog[1].options, { preventScroll: true }, 'without moving the page under the tap');
+  assert.equal(document.activeElement, root);
+});
+
+test('a press on the send button puts an open keyboard away', async () => {
+  const hides = [];
+  const { document, root } = await load({ coarse: true, virtualKeyboard: { hide: () => hides.push('hide') } });
+
+  document.activeElement = root; // the user was typing
+  press(document, composerButton());
+  await settle(2);
+
+  assert.deepEqual(hides, ['hide'], 'a send must close the keyboard, not leave it over the transcript');
+  assert.equal(
+    root.getAttribute('inputmode'),
+    'none',
+    'and the composer is left quiet, so the press cannot bring the keyboard back',
+  );
+});
+
+test('the focus the press itself performs cannot reopen the keyboard', async () => {
+  const { document, root } = await load({ coarse: true });
+
+  document.activeElement = root;
+  press(document, composerButton());
+  root.focus(); // what the button's own keepDraftFocus does on that same press
+
+  assert.equal(root.getAttribute('inputmode'), 'none');
+  assert.equal(document.activeElement, root, 'and the caret stays in the editor');
+});
+
+test('a press outside the composer leaves the editor alone', async () => {
+  const hides = [];
+  const { document, root } = await load({ coarse: true, virtualKeyboard: { hide: () => hides.push('hide') } });
+
+  document.activeElement = root;
+  press(document, outsideTarget());
+  await settle(2);
+
+  assert.deepEqual(hides, [], 'a tap on the transcript or the sidebar is not a tap on the composer');
+  assert.equal(root.getAttribute('inputmode'), null);
+});
+
+test('a fine pointer gets none of this', async () => {
+  const { document, root } = await load({ coarse: false });
+
+  root.focus();
+
+  assert.equal(root.getAttribute('inputmode'), null, 'desktop keeps the browser behaviour it has always had');
+  assert.equal(root.getAttribute('virtualkeyboardpolicy'), null);
+  assert.equal(document.activeElement, root);
 });

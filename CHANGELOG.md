@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.1.6
+
+- Mobile composer: the on-screen keyboard no longer comes up for anything but a tap on
+  the text area itself. Tapping **New session** raised it, because the composer
+  re-focuses whenever the session changes, and so did every composer button — send,
+  stop, `+`, model picker — because each passes its own `mousedown` on to the editor.
+  On a phone that covered half the transcript. A `focus()` on an editor the user is
+  not already in is now muted (`inputmode="none"` plus `virtualkeyboardpolicy="manual"`)
+  and closed outright through the VirtualKeyboard API; a `focus()` on the editor they
+  are typing in is left alone, because Lexical re-focuses its own root mid-sentence and
+  silencing that would shut the keyboard while they type. After a send the composer is
+  left quiet, so a stray second tap cannot raise the keyboard again until they tap the
+  text area, which re-arms it inside the tap.
+- Mobile composer: this is done by wrapping `HTMLElement.prototype.focus` for the
+  composer subtree, and it is coarse-pointer only — a fine pointer installs nothing and
+  desktop behaviour is untouched.
+- README: the mute is Android only (iOS ignores both attributes), noted under
+  Limitations.
+- Confirmed on the device, 2026-10-07 on Android Chrome installed as an app: **New
+  session** and **Send** no longer raise the keyboard, and a tap on the text area still
+  opens it.
+
 ## 1.1.5
 
 - Mobile composer: the diagnostic probe buttons, the plain `field` comparison

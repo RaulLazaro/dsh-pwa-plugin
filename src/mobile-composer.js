@@ -62,6 +62,18 @@
  *    against the editor's own text VERIFY_MS later and re-sent as a real
  *    insertText when it did not stick - see settleInsert.
  *
+ * 4. A keyboard the user did not ask for. Two shipped behaviours raise the
+ *    soft keyboard on their own. The composer is re-focused whenever the
+ *    session or the editor changes (client.js:17309), which is what tapping
+ *    New session trips, and every toolbar and send button re-focuses it from
+ *    its own mousedown (client.js:17581 -> keepDraftFocus ->
+ *    editor.getRootElement().focus()) so that a press never moves the caret.
+ *    On a desktop that is a nicety; on a phone the keyboard covers half the
+ *    screen. So the keyboard is governed by the tap, not by the focus call: a
+ *    programmatic focus of a composer that does not already have it is made
+ *    quiet, a press anywhere else in the composer card puts an open keyboard
+ *    away, and a press on the text area itself gives it back. See section 4.
+ *
  * 1.1.5 removed the diagnostic probe buttons, the plain `field` comparison
  * editables and the trace panel the paste investigation used; they are in git
  * history if a paste regression ever needs them again. Every listener is
@@ -108,10 +120,18 @@
 
   /** The composer's Lexical root, or null when the event is not aimed at it. */
   function composerRoot(event) {
-    var target = event.target;
-    if (!target || typeof target.closest !== 'function') return null;
-    var root = target.closest(EDITOR_SELECTOR);
-    if (root === null) return null;
+    return composerElement(event.target);
+  }
+
+  /**
+   * The composer's Lexical root for any node, or null when the node is not in
+   * one. Events arrive aimed at a descendant and focus() is called on the root
+   * itself, so both routes go through closest.
+   */
+  function composerElement(el) {
+    if (el === null || el === undefined || typeof el.closest !== 'function') return null;
+    var root = el.closest(EDITOR_SELECTOR);
+    if (root === null || root === undefined) return null;
     if (root.closest('[role="dialog"]') !== null) return null;
     if (root.offsetParent === null) return null;
     return root;
@@ -533,5 +553,146 @@
     },
     true,
   );
+
+  // ---- 4. The keyboard comes up for a tap on the text area, nothing else ----
+  //
+  // A focus call cannot be read on its own: the composer re-focuses the draft
+  // for a reason the user did not ask for (the effect above) and for reasons
+  // they did (the caret a press must not move). What separates the two is
+  // whether the composer already had focus. Nobody types into a blur, so a
+  // focus call on an editor that is not focused yet is never the user's, and a
+  // focus call on the one they are typing in is always theirs to keep.
+
+  // Two attributes, because the engines differ on which one is a promise:
+  // inputmode=none is the documented way to focus an editable without a
+  // keyboard, virtualkeyboardpolicy=manual is the browser's own switch for it.
+  var QUIET_ATTRIBUTES = [['inputmode', 'none'], ['virtualkeyboardpolicy', 'manual']];
+  // How long after a tap on the text area a focus call still counts as the
+  // user's. The re-focus below happens in the tap itself, so this only has to
+  // outlive that dispatch.
+  var INTENT_MS = 700;
+
+  var userIntentUntil = 0;
+  var nativeFocus = null;
+
+  /** Focus this composer without a keyboard. */
+  function quiet(root) {
+    if (root.__dshPwaQuiet === true) return;
+    var previous = [];
+    for (var i = 0; i < QUIET_ATTRIBUTES.length; i++) {
+      previous.push([QUIET_ATTRIBUTES[i][0], root.getAttribute(QUIET_ATTRIBUTES[i][0])]);
+      root.setAttribute(QUIET_ATTRIBUTES[i][0], QUIET_ATTRIBUTES[i][1]);
+    }
+    root.__dshPwaQuiet = true;
+    root.__dshPwaQuietPrevious = previous;
+  }
+
+  /** Give this composer its keyboard back. */
+  function unquiet(root) {
+    if (root.__dshPwaQuiet !== true) return;
+    var previous = root.__dshPwaQuietPrevious || [];
+    for (var i = 0; i < previous.length; i++) {
+      if (previous[i][1] === null || previous[i][1] === undefined) root.removeAttribute(previous[i][0]);
+      else root.setAttribute(previous[i][0], previous[i][1]);
+    }
+    root.__dshPwaQuiet = false;
+    root.__dshPwaQuietPrevious = null;
+  }
+
+  /** Put the keyboard away now. hide() keeps the caret where blur does not. */
+  function dismissKeyboard(root) {
+    var api = navigator.virtualKeyboard;
+    if (api && typeof api.hide === 'function') {
+      try {
+        api.hide();
+        return;
+      } catch (err) {
+        // Fall through to the blur, which every engine honours.
+      }
+    }
+    if (document.activeElement === root && typeof root.blur === 'function') {
+      try {
+        root.blur();
+      } catch (err) {
+        // Nothing left to try; the keyboard follows the focus out by itself.
+      }
+    }
+  }
+
+  function quietFocus(root, args) {
+    quiet(root);
+    nativeFocus.apply(root, args);
+    // One macrotask on, the browser has made up its mind. Asking again is the
+    // only lever left on an engine that ignores both attributes, and the guard
+    // keeps it from closing a keyboard the user opened in the meantime.
+    setTimeout(function () {
+      if (root.__dshPwaQuiet === true) dismissKeyboard(root);
+    }, 0);
+  }
+
+  function installQuietFocus() {
+    if (typeof HTMLElement === 'undefined' || typeof HTMLElement.prototype.focus !== 'function') return false;
+    nativeFocus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function () {
+      var root = composerElement(this);
+      if (root === null) return nativeFocus.apply(this, arguments);
+      if (Date.now() < userIntentUntil) return nativeFocus.apply(this, arguments);
+      // Already focused: Lexical re-focusing its own root while the user types
+      // (client.js:7794), or a second pass over the composer they are in.
+      // Closing that keyboard is the bug, so this one is left alone.
+      if (document.activeElement === root) return nativeFocus.apply(this, arguments);
+      return quietFocus(root, arguments);
+    };
+    return true;
+  }
+
+  /** The composer the user is in, for a press that is not on the text area. */
+  function currentComposer() {
+    var root = composerElement(document.activeElement);
+    return root === null ? liveEditor() : root;
+  }
+
+  if (installQuietFocus()) {
+    document.addEventListener(
+      'pointerdown',
+      function (event) {
+        var target = event.target;
+        if (!target || typeof target.closest !== 'function') return;
+
+        var root = composerElement(target);
+        if (root !== null) {
+          // The user asked for the keyboard. Clear the quiet attributes before
+          // the browser's own tap-focus runs, and restart the focus when the
+          // editor was already sitting there quietly focused - the tap is what
+          // has to open the keyboard, and clearing an attribute may be too late
+          // to reach a focus that already happened.
+          userIntentUntil = Date.now() + INTENT_MS;
+          var wasQuiet = root.__dshPwaQuiet === true;
+          unquiet(root);
+          if (wasQuiet) {
+            try {
+              root.blur();
+            } catch (err) {
+              // An unfocused editor needs no blur, and the focus below is still
+              // inside the tap's activation either way.
+            }
+            nativeFocus.call(root, { preventScroll: true });
+          }
+          return;
+        }
+
+        // Any other press in the composer - send, stop, the + menu, the model
+        // seat - is the user leaving the text. Put the keyboard away, and mark
+        // the composer quiet so the press's own keepDraftFocus cannot bring it
+        // back and a later tap on the text area knows to re-focus.
+        if (target.closest('[data-composer-card]') === null) return;
+        var editor = currentComposer();
+        if (editor === null) return;
+        quiet(editor);
+        dismissKeyboard(editor);
+      },
+      true,
+    );
+  }
 
 })();

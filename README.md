@@ -10,6 +10,9 @@ PWA plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) that adds 
 - **Offline-first** for static assets
 - **Sign in from inside the app** — a locked-out navigation shows a code box instead of dsh's plain-text 401
 - **Mobile composer fix** — on a phone, Enter inserts a newline instead of sending, and a paste whose payload the composer cannot see is recovered (from the clipboard API, or replayed from the one `insertText` the Android keyboard's clipboard panel sends)
+- **Keyboard stays down** — on a phone the on-screen keyboard only opens for a tap on
+  the text area itself, so **New session** and **Send** stop covering the transcript
+  with it (Android; the reason is under [Limitations](#limitations))
 - **Official DSH whale icon** — derived from the upstream SVG favicon
 
 ## Installation
@@ -140,6 +143,11 @@ whole URL carrying `?token=` — and repeats the same exchange.
 - Image paste from an Android keyboard's clipboard panel needs the Chromium flag
   described under [Android](#android). Chrome updates can reset flags, so a
   crossed-out image item is the first thing to check if that ever regresses.
+- The keyboard mute in the mobile composer fix is Android only. It rides on
+  `inputmode="none"` and `virtualkeyboardpolicy="manual"`, which iOS Safari ignores, and
+  the `focus()` wrapper is installed only for a coarse pointer. On an iPhone the
+  keyboard still comes up for **New session** and **Send**; closing it there needs a
+  different lever (a blur instead of a mute), which is not written yet.
 
 ## Project Structure
 
@@ -186,7 +194,10 @@ Zero-dependency suite on Node's built-in runner (`node --test`):
   once (and the retry is not claimed a second time), a paste carrying markup is
   normalised to its plain text, a paste with no editable under it lands in the editor
   last typed in, an insertion the editor drops is measured and re-sent exactly once,
-  and the module ships no diagnostic overlay.
+  a programmatic focus of a composer the user is not in is muted and then dismissed
+  while a focus on the one they are typing in is left alone, a tap on the text area
+  re-arms the keyboard where a tap on any other composer button closes it, and the
+  module ships no diagnostic overlay.
 - `test/host.test.mjs` — route registration (sw, manifest, 4 icons, version),
   response headers, the index-HTML script injection, and the effect cleanup
   used on HMR unmounts.
