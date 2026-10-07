@@ -25,6 +25,31 @@ The plugin appends two inline `<script>` blocks to `index.html` (`src/host/index
 
 The composer fix is inlined rather than served as a separate file on purpose: the worker answers non-HTML `GET`s cache-first, so an external script would be pinned to its first version.
 
+## The dsh token fence
+
+dsh web authenticates browser sessions itself (`dsh-client-connection`, class
+`BrowserAuth`): `GET /?token=<code>` exchanges the per-run launch token for a signed
+cookie (`{authority, issuedAt, expiresAt}`, HMAC over a persistent browser-session
+credential, `HttpOnly; SameSite=Strict`), and other document requests answer a
+plain-text `401`. The plugin does not participate in that check and cannot mint a
+session.
+
+What it does do is serve a replacement page for the `401` an HTML navigation
+receives, so an installed app — which has no address bar — has somewhere to type the
+code. That page:
+
+- holds no credential and stores none; the code the user pastes is put into
+  `/?token=<code>` exactly as the URL dsh prints would be,
+- is never cached, carries `Cache-Control: no-store`, and is marked `X-DSH-PWA-Signin: 1`,
+- is only reached with a `401`; a normal response passes through untouched.
+
+Worth knowing (measured 2026-10-07): the plugin's own routes — `/sw.js`,
+`/manifest.webmanifest`, `/icons/*`, `/dsh-pwa/version` — are **not** behind the
+fence, because exact routes registered through `webServer.register` bypass it. They
+answer `200` to an unauthenticated request while `/` answers `401`. Those paths
+expose only static assets, the worker, the manifest and icons; the app document
+stays fenced. Do not move data a fenced user should not see onto those routes.
+
 ## Updates
 
 Security updates are released as patch versions. Update by pulling the latest from the repository.

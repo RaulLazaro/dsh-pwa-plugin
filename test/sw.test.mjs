@@ -53,6 +53,10 @@ globalThis.caches = {
       async addAll(urls) {
         m.addAll = { name, urls };
       },
+      async add(url) {
+        m.adds.push(url);
+        if (m.addRejects.includes(url)) throw new Error(`pre-cache failed for ${url}`);
+      },
       async put(request, response) {
         m.puts.push({ request, response });
       },
@@ -85,6 +89,8 @@ function reset() {
     opened: [],
     deleted: [],
     addAll: null,
+    adds: [],
+    addRejects: [],
     puts: [],
     matchCalls: [],
     matchResult: undefined,
@@ -114,12 +120,12 @@ test('registers install, activate, fetch and message handlers', () => {
   }
 });
 
-test('install pre-caches the static asset list and calls skipWaiting', async () => {
+test('install pre-caches the static list one URL at a time and calls skipWaiting', async () => {
   let pending;
   handlers.install({ waitUntil(p) { pending = p; } });
   await pending;
   assert.equal(m.opened[0], STATIC_CACHE);
-  assert.deepEqual(m.addAll.urls, [
+  assert.deepEqual(m.adds, [
     '/',
     '/manifest.webmanifest',
     '/favicon.svg',
@@ -129,6 +135,18 @@ test('install pre-caches the static asset list and calls skipWaiting', async () 
     '/icons/icon-512-maskable.png',
   ]);
   assert.equal(calls.skipWaiting, 1, 'install must activate immediately (skipWaiting)');
+});
+
+test('a pre-cache URL that fails does not stop the worker installing', async () => {
+  // The fence refuses '/' with a 401 while a client is signed out, and that is
+  // exactly when a fixed worker is needed. addAll() would reject as a whole and
+  // leave this update permanently redundant.
+  m.addRejects = ['/'];
+  let pending;
+  handlers.install({ waitUntil(p) { pending = p; } });
+  await pending;
+  assert.equal(m.adds.length, 7, 'every URL is still attempted');
+  assert.equal(calls.skipWaiting, 1, 'the worker must still take over');
 });
 
 test('activate keeps only the current caches and claims clients', async () => {
@@ -188,6 +206,36 @@ test('HTML navigations are network-first and cached on success', async () => {
   assert.equal(m.puts.length, 1);
 });
 
+test("a locked-out navigation gets the sign-in page, not the fence's plain-text 401", async () => {
+  m.fetchResponse = { status: 401 };
+  const result = await runFetch(makeRequest('https://dsh.local/', { headers: { accept: 'text/html' } }));
+  assert.equal(result.status, 200, 'the replacement is a working page, not an error');
+  assert.equal(result.headers.get('x-dsh-pwa-signin'), '1');
+  assert.match(result.headers.get('content-type'), /text\/html/);
+  const body = await result.text();
+  assert.match(body, /Sign in to DSH/);
+  assert.match(body, /\/\?token=/, 'the form must perform the same token exchange the printed URL does');
+  await flush();
+  assert.equal(m.puts.length, 0, 'a sign-in page must never enter the cache');
+});
+
+test('a navigation that carried a rejected code says so', async () => {
+  m.fetchResponse = { status: 401 };
+  const result = await runFetch(makeRequest(
+    'https://dsh.local/?token=AAAAAAAAAAAAAAAAAAAAAAAA',
+    { headers: { accept: 'text/html' } }
+  ));
+  const body = await result.text();
+  assert.match(body, /not accepted/, 'a rejected code must not look like nothing happened');
+});
+
+test('the sign-in page names where the code comes from and accepts a pasted URL', async () => {
+  const source = readFileSync(join(root, 'src', 'sw.js'), 'utf-8');
+  assert.match(source, /dshw-token\.ps1/, 'the page must name the command that prints the code');
+  assert.match(source, /\[\?&\]token=\(\[A-Za-z0-9_-\]\{20,\}\)/, 'a pasted URL must be accepted, not only a bare code');
+  assert.match(source, /__NOTE__/, 'the page carries a note slot for the rejected-code message');
+});
+
 test('a failing cache put never breaks the HTML response', async () => {
   const response = { clone: () => ({ cloned: true }) };
   m.fetchResponse = response;
@@ -197,6 +245,7 @@ test('a failing cache put never breaks the HTML response', async () => {
     async open() {
       return {
         async addAll() {},
+        async add() {},
         async put() { throw new Error('unsupported scheme'); },
         async match() { return undefined; },
       };

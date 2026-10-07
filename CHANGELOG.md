@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.3
+
+- Service worker: an HTML navigation answered `401` by dsh's token fence is replaced
+  by a sign-in page that performs the same `?token=` exchange, so an installed app
+  (no address bar) is no longer a dead end; a rejected code is called out instead of
+  silently redisplaying the page
+- Service worker: pre-cache one URL at a time instead of `addAll`, so a signed-out
+  client (which gets `401` for `/`) can still install a new worker — previously the
+  update that could rescue it never activated
+- README + SECURITY: document the fence, why the plugin's own routes bypass it, and
+  what the sign-in page does and does not hold
+
+## 1.1.2
+
+- Mobile composer: a pasted block that arrives as one large `insertText` (Android
+  keyboard clipboard panel) is replayed as a real paste; a block that arrives with no
+  editable under it is recovered into the composer
+- Mobile composer: Enter inserts a newline on coarse pointers instead of sending
+- Mobile composer: an armed diagnosis overlay (probe buttons + `sel`/`bi`/`mut` trace)
+- Manifest: `orientation` no longer forced, so the OS rotation lock is respected
+
 ## 1.1.1
 
 - Fix `TypeError: Failed to execute 'put' on 'Cache': Request scheme 'chrome-extension' is unsupported` — skip non-HTTP(S) schemes early
