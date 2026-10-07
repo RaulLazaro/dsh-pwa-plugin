@@ -30,10 +30,10 @@ const OFFLINE_PAGE = `
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DSH - Offline</title>
   <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    body { font-family: system-ui, sans-serif; background: #151517; color: #f9fafb; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
     .container { text-align: center; padding: 2rem; }
     h1 { font-size: 2rem; margin-bottom: 0.5rem; }
-    p { color: #94a3b8; margin-top: 0.5rem; }
+    p { color: #cfd3d6; margin-top: 0.5rem; }
   </style>
 </head>
 <body>
@@ -59,16 +59,16 @@ const SIGN_IN_PAGE = `
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DSH - sign in</title>
   <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    body { font-family: system-ui, sans-serif; background: #151517; color: #f9fafb; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
     .card { padding: 1.5rem; width: 100%; max-width: 26rem; }
     h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
-    p { color: #94a3b8; line-height: 1.5; margin: 0.6rem 0; }
-    code { background: #1e293b; padding: 0.1rem 0.35rem; border-radius: 0.25rem; color: #e2e8f0; }
-    input { width: 100%; box-sizing: border-box; padding: 0.7rem; border-radius: 0.4rem; border: 1px solid #334155; background: #1e293b; color: #e2e8f0; font-size: 1rem; }
-    button { margin-top: 0.75rem; width: 100%; padding: 0.7rem; border: 0; border-radius: 0.4rem; background: #2563eb; color: #fff; font-size: 1rem; }
-    .note { color: #f87171; min-height: 1.25rem; margin: 0; }
-    .hint { color: #64748b; font-size: 0.8rem; margin: 0.6rem 0 0; }
-    #forget { background: transparent; border: 1px solid #334155; color: #94a3b8; font-size: 0.85rem; padding: 0.45rem; }
+    p { color: #cfd3d6; line-height: 1.5; margin: 0.6rem 0; }
+    code { background: #2c2c2e; padding: 0.1rem 0.35rem; border-radius: 0.25rem; color: #f9fafb; }
+    input { width: 100%; box-sizing: border-box; padding: 0.7rem; border-radius: 0.4rem; border: 1px solid #ffffff1f; background: #232324; color: #f9fafb; font-size: 1rem; }
+    button { margin-top: 0.75rem; width: 100%; padding: 0.7rem; border: 0; border-radius: 0.4rem; background: #f9fafb; color: #151517; font-size: 1rem; }
+    .note { color: #f25a5a; min-height: 1.25rem; margin: 0; }
+    .hint { color: #81858c; font-size: 0.8rem; margin: 0.6rem 0 0; }
+    #forget { background: transparent; border: 1px solid #ffffff1f; color: #cfd3d6; font-size: 0.85rem; padding: 0.45rem; }
   </style>
 </head>
 <body>

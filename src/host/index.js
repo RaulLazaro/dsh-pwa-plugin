@@ -203,9 +203,13 @@ ${source}
       // host, not one of our icons). A PNG <link> plus a real /favicon.ico is
       // what that fallback needs; the apple-* metas are for iOS, which ignores
       // the manifest's icons when adding to the home screen.
+      //
+      // No <meta name="theme-color"> here on purpose: a meta tag overrides the
+      // manifest's theme_color, so a second copy of the colour drifts from the
+      // manifest the moment either one changes, and it is host code that only a
+      // restart republishes. The manifest is the single source for it.
       const headTags = `<link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-<meta name="theme-color" content="#0f172a">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">

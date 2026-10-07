@@ -79,6 +79,6 @@ test('no icon points at the dsh /favicon.svg mark', () => {
   );
   assert.ok(
     manifest.icons.some((i) => i.src === '/icons/icon.svg'),
-    'the transparent whale must be the vector icon'
+    'the DSH mark must be the vector icon'
   );
 });

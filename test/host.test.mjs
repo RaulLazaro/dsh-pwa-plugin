@@ -253,7 +253,14 @@ test('index tap injects the icon identity into <head>, not just the body', () =>
   assert.ok(iconAt !== -1, 'the PNG favicon link must be injected');
   assert.ok(iconAt < headAt, 'the icon link belongs in the head: Chrome resolves it before the body parses');
   assert.ok(out.includes('rel="apple-touch-icon"'), 'iOS ignores manifest icons when adding to the home screen');
-  assert.ok(out.includes('name="theme-color"'), 'dsh ships no theme-color meta, so the status bar colour comes from here');
+  // A meta theme-color would override the manifest's, so the manifest stays the
+  // single source for the status-bar colour rather than a second copy that only
+  // a restart republishes.
+  assert.equal(
+    out.includes('name="theme-color"'),
+    false,
+    'the manifest theme_color must be the only copy of that colour'
+  );
 
   // A fragment with no </head> must keep its own prefix rather than being preempted.
   const orphan = '<html><body>partial';

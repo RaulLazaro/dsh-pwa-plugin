@@ -4,9 +4,10 @@
  * CI installs nothing (see .github/workflows), and sharp is deliberately not a
  * dependency, so these tests carry their own PNG reader: IHDR + IDAT, the five
  * scanline filters, and a pixel sampler. That is enough to assert the two things
- * a launcher actually cares about - a transparent icon has real transparency,
- * and a maskable icon is opaque to its corners - plus that favouring them from
- * the SVG sources produced the sizes the manifest advertises.
+ * a launcher actually cares about - an "any" icon fills its tile to the corners
+ * with dsh's own dark ground, and a maskable icon is opaque to its corners - plus
+ * that rendering them from the SVG sources produced the sizes the manifest
+ * advertises.
  */
 
 import { test } from 'node:test';
@@ -102,23 +103,23 @@ function decodePng(buffer) {
 }
 
 const read = (file) => decodePng(readFileSync(file));
-const isBlue = (p) => p.a > 200 && p.b > 150 && p.b > p.r && p.b > p.g;
-const isGround = (p) => p.a > 200 && p.r === 0x0f && p.g === 0x17 && p.b === 0x2a;
+const isMark = (p) => p.a > 200 && p.r === 0xf9 && p.g === 0xfa && p.b === 0xfb;
+const isGround = (p) => p.a > 200 && p.r === 0x15 && p.g === 0x15 && p.b === 0x17;
 
-test('the transparent icons really are transparent, not a baked-in background', () => {
+test('the any-purpose icons are the same opaque tile as the launcher one', () => {
   for (const [file, size] of [[ic('icon-32.png'), 32], [ic('icon-192.png'), 192], [ic('icon-512.png'), 512]]) {
     const png = read(file);
     assert.equal(png.header.width, size, `${file} width`);
     assert.equal(png.header.height, size, `${file} height`);
     assert.equal(png.header.colorType, 6, `${file} must keep an alpha channel`);
-    // The glyph is inset to 90%, so the corners are outside the artwork. If a
-    // ground rect ever creeps into this SVG, Android shows a square tile in the
-    // notification shade and the adaptive launcher crops it into a blob.
-    assert.equal(png.at(0, 0).a, 0, `${file} top-left corner must be transparent`);
-    assert.equal(png.at(size - 1, size - 1).a, 0, `${file} bottom-right corner must be transparent`);
-    const opaque = png.count((p) => p.a === 255);
-    assert.ok(opaque > size * size * 0.05, `${file} should be a solid whale, ${opaque} of ${size * size} pixels are opaque`);
-    assert.ok(png.count(isBlue) > 0, `${file} should draw the #4D6BFE whale`);
+    // A floating transparent glyph leaves Android compositing a white mark on
+    // whatever background the launcher happens to use. The ground fills to every
+    // corner instead, so this tile reads the same as the maskable one and as the
+    // dsh dark theme it is drawn from.
+    assert.ok(isGround(png.at(0, 0)), `${file} top-left corner must be the #151517 ground`);
+    assert.ok(isGround(png.at(size - 1, size - 1)), `${file} bottom-right corner must be the ground`);
+    assert.ok(png.count(isMark) > size * size * 0.05, `${file} should draw the white mark, only ${png.count(isMark)} px matched`);
+    assert.equal(png.count((p) => p.a !== 255), 0, `${file} must have no translucent pixels`);
   }
 });
 
@@ -131,9 +132,9 @@ test('the maskable icons are opaque to their corners', () => {
     // shape has to be filled by the icon itself or the launcher pads it with
     // white. The 0.80 inset guarantees the corners are ground, not artwork.
     for (const [x, y] of [[0, 0], [size - 1, 0], [0, size - 1], [size - 1, size - 1], [size >> 1, 0]]) {
-      assert.ok(isGround(png.at(x, y)), `${file} ${x},${y} must be the #0f172a ground`);
+      assert.ok(isGround(png.at(x, y)), `${file} ${x},${y} must be the #151517 ground`);
     }
-    assert.ok(png.count(isBlue) > 0, `${file} should still draw the whale`);
+    assert.ok(png.count(isMark) > 0, `${file} should still draw the white mark`);
     const transparent = png.count((p) => p.a !== 255);
     assert.equal(transparent, 0, `${file} must have no translucent pixels`);
   }
@@ -172,8 +173,8 @@ test('favicon.ico packs real PNGs at the three sizes a browser asks for', () => 
 
 test('the three committed SVGs carry the glyph, the right fills and no XML trap', () => {
   const spec = {
-    'icon.svg': { fills: ['#4D6BFE'], rect: false },
-    'icon-maskable.svg': { fills: ['#0f172a', '#4D6BFE'], rect: true },
+    'icon.svg': { fills: ['#151517', '#f9fafb'], rect: true },
+    'icon-maskable.svg': { fills: ['#151517', '#f9fafb'], rect: true },
     'icon-monochrome.svg': { fills: ['#ffffff'], rect: false },
   };
   for (const [name, { fills, rect }] of Object.entries(spec)) {

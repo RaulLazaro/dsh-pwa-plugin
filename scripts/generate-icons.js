@@ -8,7 +8,7 @@
  * The three SVGs in public/icons/ are the source of truth and are committed, so
  * CI and a fresh checkout need nothing installed:
  *
- *   icon.svg             transparent, "any" purpose
+ *   icon.svg             opaque ground, "any" purpose
  *   icon-maskable.svg    opaque ground, artwork inside the 0.80 safe zone
  *   icon-monochrome.svg  white silhouette, "monochrome" purpose
  *
@@ -29,8 +29,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, '..', 'public');
 const ICONS_DIR = join(PUBLIC_DIR, 'icons');
 
-const GROUND = '#0f172a';
-const WHALE = '#4D6BFE';
+// dsh's own dark theme, not a navy: the values are the --dsw-static-neutral-bluish
+// tokens from dsh-client-ui-theme (base 950 = #151517, raised 875 = #232324).
+const GROUND = '#151517';
+// The DSH mark is a single-colour silhouette - the frontend's favicon-dark.svg
+// fills the same path white - so the icon uses dsh's dark-mode label colour
+// (--dsw-alias-label-primary, neutral-bluish-50) rather than a brand blue.
+const WHALE = '#f9fafb';
 const VIEW_BOX = '0 0 50 50';
 const BOX = 50;
 
@@ -43,7 +48,7 @@ const REGULAR_INSET = 0.9;
 // No double hyphen may appear here: this text becomes an XML comment, and "--"
 // is illegal inside one (librsvg rejects the whole file).
 const PROVENANCE =
-  'Whale glyph from the DeepSeek Harness web frontend favicon (viewBox 0 0 50 50), vendored 2026-10-07 by scripts/generate-icons.js, re-vendor with its source flag';
+  'Whale glyph from the DeepSeek Harness web frontend favicon (viewBox 0 0 50 50), vendored 2026-10-07 by scripts/generate-icons.js, re-vendor with its source flag; colours are the dsh dark-theme neutral tokens';
 
 function artBody(fill, inset, ground) {
   const scale = inset;
@@ -75,7 +80,7 @@ export function extractGlyph(svgText) {
 export function writeArt({ d }, dir = ICONS_DIR) {
   mkdirSync(dir, { recursive: true });
   const files = {
-    'icon.svg': wrap(WHALE, REGULAR_INSET, null),
+    'icon.svg': wrap(WHALE, REGULAR_INSET, GROUND),
     'icon-maskable.svg': wrap(WHALE, MASKABLE_INSET, GROUND),
     'icon-monochrome.svg': wrap('#ffffff', REGULAR_INSET, null),
   };

@@ -82,8 +82,8 @@
         el.setAttribute('data-dsh-back-toast', '');
         el.style.cssText =
           'position:fixed;left:50%;bottom:32px;transform:translateX(-50%);z-index:2147483647;' +
-          'background:rgba(15,23,42,.95);color:#e2e8f0;font:14px/1.4 system-ui,sans-serif;' +
-          'padding:10px 16px;border-radius:999px;border:1px solid rgba(77,107,254,.5);' +
+          'background:rgba(35,35,36,.96);color:#f9fafb;font:14px/1.4 system-ui,sans-serif;' +
+          'padding:10px 16px;border-radius:999px;border:1px solid rgba(255,255,255,.12);' +
           'box-shadow:0 8px 24px rgba(0,0,0,.4);pointer-events:none;opacity:0;transition:opacity .18s ease';
         doc.body.appendChild(el);
         toastEl = el;

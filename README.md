@@ -17,9 +17,10 @@ PWA plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) that adds 
 - **Keyboard stays down** — on a phone the on-screen keyboard only opens for a tap on
   the text area itself, so **New session** and **Send** stop covering the transcript
   with it (Android; the reason is under [Limitations](#limitations))
-- **Transparent DSH whale icon** — the official mark on transparent ground, for the app
-  icon, the notification badge and the favicon, with a maskable variant and a
-  single-colour silhouette for the manifest's `monochrome` slot
+- **DSH mark icon set** — the official mark as a white silhouette on dsh's dark
+  neutral ground (the `#151517` base and `#f9fafb` label colour the app UI itself
+  uses), for the app icon, the favicon and the apple touch icon, with a maskable
+  variant and a single-colour silhouette for the manifest's `monochrome` slot
 
 ## Installation
 
