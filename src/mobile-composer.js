@@ -101,6 +101,12 @@
   };
   var ARMED_MS = 25000;
   var PANEL_LINES = 8;
+  // Printed on the ARMED line, so a screenshot of the panel names the build that
+  // produced it instead of costing a round trip to find out.
+  var BUILD = '1.1.4';
+  // How long an insertion is given before it is measured. Long enough for a paste
+  // to be handled and rendered, short enough that a retry stays invisible.
+  var VERIFY_MS = 250;
   // The chip commits a pasted block as one insertText. A keystroke, an
   // autocorrect word and a predictive-text sentence all arrive the same way, so
   // the threshold sits above anything a keyboard sends in one event and far
@@ -109,6 +115,10 @@
 
   var traced = [];
   var panel = null;
+  // Depth of our own replayed insertions. The beforeinput execCommand generates is
+  // the same shape as the block this code claims, so without this the retry would
+  // be claimed again and replayed again.
+  var replaying = 0;
   var panelTimer = null;
   var vanishTimer = null;
   var armedUntil = 0;
@@ -229,7 +239,10 @@
     traced.length = 0;
     armedLines = 0;
     armedUntil = Date.now() + ARMED_MS;
-    trace('ARMED ' + ARMED_MS / 1000 + 's - do the paste now (editors=' + editorCount() + ' len=' + editorsLen() + ')');
+    trace(
+      'ARMED ' + ARMED_MS / 1000 + 's build=' + BUILD + ' - do the paste now (editors=' +
+        editorCount() + ' len=' + editorsLen() + ')',
+    );
     showPanel();
     setTimeout(function () {
       armedUntil = 0;
@@ -427,22 +440,77 @@
     if (typeof document.execCommand !== 'function') return false;
     try {
       if (typeof root.focus === 'function') root.focus({ preventScroll: true });
-      return document.execCommand('insertText', false, text) === true;
+      replaying++;
+      try {
+        return document.execCommand('insertText', false, text) === true;
+      } finally {
+        replaying--;
+      }
     } catch (err) {
       return false;
     }
   }
 
+  /**
+   * One word of the block that has to be in the editor for the insertion to count
+   * as landed. Split on whitespace because Lexical renders a pasted block as
+   * several blocks, and long enough that a coincidence cannot pass for a paste.
+   */
+  function probeSlice(text) {
+    var words = String(text).split(/\s+/);
+    var i;
+    for (i = 0; i < words.length; i++) {
+      if (words[i].length >= 4) return words[i].slice(0, 24);
+    }
+    return String(text).trim().slice(0, 24);
+  }
+
+  function landed(root, text) {
+    var slice = probeSlice(text);
+    try {
+      if (slice === '') return domLen(root) > 0;
+      return String(root.textContent || '').indexOf(slice) !== -1;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  /**
+   * The composer answering preventDefault is its verdict, not proof. An editor that
+   * is mid-reconciliation drops the text anyway, and so does an insertText that
+   * follows a handled selection command: client.js:212554 opens that window (`Vn`,
+   * on a selection command such as Select all) and its beforeinput handler prevents
+   * the next non-empty insertText and collapses the selection into a caret. Both end
+   * at ed=0 after the text was already in the DOM - the shape the device kept
+   * reporting (ed=505, then ed=0). So the text is measured, and one that did not
+   * stick is re-sent as a real insertText a macrotask later, past that window, where
+   * the editor's own beforeinput handler takes it.
+   */
+  function settleInsert(root, text, origin, before, retried) {
+    setTimeout(function () {
+      if (landed(root, text)) {
+        trace('   held at ' + domLen(root) + ' chars');
+        showPanel();
+        return;
+      }
+      if (retried) {
+        observe(origin + ' -> BOTH PATHS FAILED (' + text.length + ' chars lost, dom ' + before + ' -> ' + domLen(root) + ')');
+        return;
+      }
+      observe(origin + ' -> ' + text.length + ' chars did not stick, re-sending as insertText');
+      if (!insertDirectly(root, text)) {
+        observe(origin + ' -> insertText refused (dom ' + domLen(root) + ')');
+        return;
+      }
+      settleInsert(root, text, origin, before, true);
+    }, VERIFY_MS);
+  }
+
   function insert(root, text, origin) {
     var before = domLen(root);
-    if (replayAsPaste(root, text) === true) {
-      observe(origin + ' -> composer consumed ' + text.length + ' chars');
-      return;
-    }
-    var inserted = insertDirectly(root, text);
-    var after = domLen(root);
-    if (inserted) observe(origin + ' -> insertText fallback ' + text.length + ' chars (dom ' + before + '->' + after + ')');
-    else observe(origin + ' -> BOTH PATHS FAILED (' + text.length + ' chars lost, dom ' + before + ')');
+    var consumed = replayAsPaste(root, text) === true;
+    observe(origin + ' -> ' + (consumed ? 'composer consumed ' : 'replayed, not consumed ') + text.length + ' chars');
+    settleInsert(root, text, origin, before, false);
   }
 
   /**
@@ -615,7 +683,9 @@
       // word or a composition commit is a handful of characters, so anything
       // longer came off the clipboard and goes down the path the long-press paste
       // already proved on the device.
-      if (type === 'insertText' && event.isComposing !== true && data.length > TYPED_CHUNK_MAX) {
+      // `replaying` excludes our own retry: its beforeinput carries the same block
+      // and would otherwise be claimed a second time.
+      if (type === 'insertText' && event.isComposing !== true && replaying === 0 && data.length > TYPED_CHUNK_MAX) {
         if (root !== null) {
           event.preventDefault();
           event.stopImmediatePropagation();

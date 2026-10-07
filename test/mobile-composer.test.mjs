@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 // The mobile composer fix runs in the browser, but its decision logic is plain
 // DOM event handling and can be pinned down with a small stub. These tests exist
@@ -154,7 +155,7 @@ function makeDocument() {
   };
 }
 
-function makeRoot({ haspopup = null, visible = true, consume = false } = {}) {
+function makeRoot({ haspopup = null, visible = true, consume = false, pasteLands = true, pasteDropAfter = 0 } = {}) {
   const dispatched = [];
   const root = {
     id: '',
@@ -167,8 +168,22 @@ function makeRoot({ haspopup = null, visible = true, consume = false } = {}) {
     dispatchEvent: (event) => {
       dispatched.push(event);
       // The composer's PASTE handler calls preventDefault on the branch that
-      // inserts the text, which is how the fix knows the text landed.
-      if (consume && event.type === 'paste') event.preventDefault();
+      // inserts the text, and inserting it is what puts the text in the editor.
+      // The two are separable on the device - preventDefault with nothing
+      // inserted - which is why the fix measures the editor instead of trusting
+      // the verdict. pasteDropAfter reproduces the other half seen on the device:
+      // the text renders and the editor then reconciles it away (ed=505 -> ed=0).
+      if (consume && event.type === 'paste') {
+        event.preventDefault();
+        if (pasteLands) {
+          root.textContent += event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+          if (pasteDropAfter > 0) {
+            setTimeout(() => {
+              root.textContent = '';
+            }, pasteDropAfter);
+          }
+        }
+      }
       return true;
     },
   };
@@ -182,6 +197,8 @@ async function load({
   forced = false,
   clipboard = null,
   consume = false,
+  pasteLands = true,
+  pasteDropAfter = 0,
   execCommand = null,
 } = {}) {
   const document = makeDocument();
@@ -218,7 +235,7 @@ async function load({
     document,
     window,
     body: document.body,
-    root: makeRoot({ consume }),
+    root: makeRoot({ consume, pasteLands, pasteDropAfter }),
     restore: () => Object.assign(globalThis, previous),
   };
 }
@@ -384,13 +401,15 @@ test('non-paste beforeinput types are ignored', async () => {
   assert.equal(root.dispatched.length, 0);
 });
 
-test('a consumed paste is never inserted twice', async () => {
+test('a consumed paste is never inserted twice', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const commands = [];
   const { document, root } = await load({
     coarse: true,
     consume: true,
     execCommand: (name, ui, value) => {
       commands.push([name, value]);
+      root.textContent += value;
       return true;
     },
   });
@@ -406,19 +425,24 @@ test('a consumed paste is never inserted twice', async () => {
   document.fire('beforeinput', androidPaste);
 
   assert.equal(root.dispatched.length, 1, 'exactly one synthetic paste');
+  // The verification window has to close before the text can have been measured.
+  t.mock.timers.tick(500);
+  assert.equal(root.textContent, 'ONCE');
   assert.equal(
     commands.length,
     0,
-    'preventDefault on the synthetic paste is the composer accepting it, so no fallback may run'
+    'preventDefault on the synthetic paste, with the text in the editor, is a landed paste and no fallback may run'
   );
 });
 
-test('a rejected paste falls back to insertText', async () => {
+test('a rejected paste falls back to insertText', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const commands = [];
   const { document, root } = await load({
     coarse: true,
     execCommand: (name, ui, value) => {
       commands.push([name, value]);
+      root.textContent += value;
       return true;
     },
   });
@@ -434,11 +458,14 @@ test('a rejected paste falls back to insertText', async () => {
   document.fire('beforeinput', androidPaste);
 
   assert.equal(root.dispatched.length, 1);
+  assert.deepEqual(commands, [], 'the fallback is held until the editor has been measured');
+  t.mock.timers.tick(500);
   assert.deepEqual(
     commands,
     [['insertText', 'FALLBACK']],
-    'execCommand generates the real beforeinput/input pair Lexical handles'
+    'execCommand generates the real beforeinput/input pair Lexical handles, one macrotask after the window a handled selection command opens'
   );
+  assert.equal(root.textContent, 'FALLBACK');
 });
 
 test('a paste event the composer cannot read is taken over', async () => {
@@ -769,4 +796,121 @@ test('the probe takes a selection reading outside a window', async (t) => {
   document.fire('selectionchange', new StubEvent('selectionchange', {}));
   t.mock.timers.tick(400);
   assert.equal(diagPanel(body), undefined, 'nothing is traced outside an armed window');
+});
+
+/** The one insertText channel the composer cannot refuse, with the editor watching. */
+function androidPasteInto(document, root, text, inputType = 'insertFromPaste') {
+  const transfer = new StubDataTransfer();
+  transfer.setData('text/plain', text);
+  const event = new StubEvent('beforeinput', {
+    inputType,
+    dataTransfer: transfer,
+    bubbles: true,
+    cancelable: true,
+  });
+  event.target = root;
+  document.fire('beforeinput', event);
+  return event;
+}
+
+test('a paste the composer claims to have taken but that never landed is re-sent', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const commands = [];
+  const { document, root } = await load({
+    coarse: true,
+    consume: true,
+    pasteLands: false,
+    execCommand: (name, ui, value) => {
+      commands.push([name, value]);
+      root.textContent += value;
+      return true;
+    },
+  });
+  const block = 'GHOSTED ' + 'y'.repeat(120);
+  androidPasteInto(document, root, block);
+
+  assert.equal(root.dispatched.length, 1, 'the paste is still tried first');
+  assert.deepEqual(commands, [], 'nothing is retried before the window closes');
+  assert.equal(root.textContent, '', 'preventDefault with nothing inserted is the shape that used to read as success');
+  t.mock.timers.tick(500);
+  assert.deepEqual(commands, [['insertText', block]], 'the text is re-sent as the real insertText the editor handles');
+  assert.equal(root.textContent, block, 'and it is the measurement, not the verdict, that ends this');
+});
+
+test('text that lands and is then dropped by the editor is put back once', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const commands = [];
+  const { document, root } = await load({
+    coarse: true,
+    consume: true,
+    pasteDropAfter: 60,
+    execCommand: (name, ui, value) => {
+      commands.push([name, value]);
+      root.textContent += value;
+      return true;
+    },
+  });
+  const block = 'VANISHES ' + 'z'.repeat(120);
+  androidPasteInto(document, root, block);
+
+  // The device's shape: the text renders (ed=505 on the panel) and the editor
+  // then empties it (ed=0), which 1.1.3 reported as "composer consumed".
+  assert.equal(root.textContent, block);
+  t.mock.timers.tick(100);
+  assert.equal(root.textContent, '', 'the editor dropped text it never had in its model');
+  t.mock.timers.tick(400);
+  assert.deepEqual(commands, [['insertText', block]], 'a dropped paste is re-sent exactly once');
+  assert.equal(root.textContent, block);
+
+  t.mock.timers.tick(2000);
+  assert.equal(commands.length, 1, 'and a settled retry starts no further attempts');
+});
+
+test('the retry is not claimed a second time by the bulk-paste rule', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const commands = [];
+  let nested = null;
+  const { document, root } = await load({
+    coarse: true,
+    consume: true,
+    pasteLands: false,
+    execCommand: (name, ui, value) => {
+      commands.push([name, value]);
+      // execCommand in a browser generates the editor's own beforeinput, which
+      // carries exactly the block this code claims off the clipboard path.
+      nested = new StubEvent('beforeinput', {
+        inputType: 'insertText',
+        data: value,
+        bubbles: true,
+        cancelable: true,
+      });
+      nested.target = root;
+      document.fire('beforeinput', nested);
+      root.textContent += value;
+      return true;
+    },
+  });
+  const block = 'NESTED ' + 'q'.repeat(120);
+  androidPasteInto(document, root, block);
+  t.mock.timers.tick(500);
+
+  assert.deepEqual(commands, [['insertText', block]]);
+  assert.notEqual(nested, null, 'the retry has to have generated a beforeinput for this test to mean anything');
+  assert.equal(nested.defaultPrevented, false, 'our own insertText must be left for the editor to handle');
+  assert.equal(nested.immediateStopped, false, 'and must not be taken over again');
+  assert.equal(root.dispatched.length, 1, 'a re-claimed block would have dispatched a second synthetic paste');
+});
+
+test('the build the panel prints is the version of this package', async () => {
+  const [composer, pkg] = await Promise.all([
+    readFile(new URL('../src/mobile-composer.js', import.meta.url), 'utf-8'),
+    readFile(new URL('../package.json', import.meta.url), 'utf-8'),
+  ]);
+  const declared = /var BUILD = '([^']+)'/.exec(composer);
+  assert.notEqual(declared, null, 'the ARMED line prints a build, so the constant has to exist');
+  assert.equal(
+    declared[1],
+    JSON.parse(pkg).version,
+    'a screenshot of the panel names the code behind it only while these two agree'
+  );
 });

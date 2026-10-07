@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.4
+
+- Mobile composer: an insertion is measured instead of trusted. The composer
+  answering `preventDefault` on the replayed paste was taken as proof that the text
+  landed, so a paste that was accepted and then dropped (`ed=505` then `ed=0`) read
+  as a success and was never retried; the text is now looked for in the editor and,
+  when it did not stick, re-sent as a real `insertText` one macrotask later
+- Mobile composer: the retry lands *after* the window the shipped Lexical opens with
+  `handledSelectionCommandTimeoutId` (`client.js:212554`): while that window is open
+  the next non-empty `insertText` is prevented and the selection is collapsed into a
+  caret, which is what "Select all, then paste" ran into
+- Mobile composer: our own replayed `insertText` is no longer claimed a second time
+  by the bulk-paste rule, which would have replayed it in a loop
+- Mobile composer: the ARMED line prints `build=`, so a screenshot of the diagnostic
+  panel says which version of the fix produced it
+
 ## 1.1.3
 
 - Service worker: an HTML navigation answered `401` by dsh's token fence is replaced
