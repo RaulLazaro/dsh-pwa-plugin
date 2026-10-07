@@ -9,6 +9,7 @@ PWA plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) that adds 
 - **Automatic updates** — silently activates new versions
 - **Offline-first** for static assets
 - **Sign in from inside the app** — a locked-out navigation shows a code box instead of dsh's plain-text 401
+- **Mobile composer fix** — on a phone, Enter inserts a newline instead of sending, and a paste whose payload the composer cannot see is recovered (from the clipboard API, or replayed from the one `insertText` the Android keyboard's clipboard panel sends)
 - **Official DSH whale icon** — derived from the upstream SVG favicon
 
 ## Installation
@@ -40,6 +41,26 @@ In your profile's `cordis.patch.yml`:
 ```bash
 dsh web
 ```
+
+## Android
+
+Install the app from **Chrome** (⋮ menu → *Install app*, or *Add to Home screen*).
+Samsung Internet cannot host it: it has no flags UI, and the option below needs one.
+
+The composer fix covers the clipboard panel of an Android keyboard (the panel that
+opens from the clipboard icon above the keys):
+
+- **Text** from that panel needs no setup. The block arrives with no paste event at
+  all, which is why it used to vanish; the fix notices the oversized `insertText`,
+  replays it as a real paste, and then checks the text actually reached the editor.
+- **Image** from that panel needs a Chromium feature that is off by default. In the
+  same Chrome profile, open `chrome://flags/#enable-android-media-insertion`, set it
+  to **Enabled**, and restart Chrome. With the flag off, the panel's image item is
+  greyed or crossed out and the page receives nothing — that is the browser's gate,
+  not the app's. A long-press *Paste* of an image is a separate route (the fix reads
+  it with `navigator.clipboard.read()`) and does not need the flag.
+- Chrome updates can reset flags. If image paste from the panel stops working after
+  an update, check that flag before anything else.
 
 ## Generate PNG Icons
 
@@ -116,6 +137,9 @@ whole URL carrying `?token=` — and repeats the same exchange.
   needs one successful page load in that browser first. A brand-new install in a
   browser that has never signed in still needs one signed-in page load there (the
   printed URL), after which every launch is covered.
+- Image paste from an Android keyboard's clipboard panel needs the Chromium flag
+  described under [Android](#android). Chrome updates can reset flags, so a
+  crossed-out image item is the first thing to check if that ever regresses.
 
 ## Project Structure
 
@@ -124,6 +148,7 @@ dsh-pwa-plugin/
 ├── src/
 │   ├── host/
 │   │   └── index.js          # Host plugin (Node.js)
+│   ├── mobile-composer.js    # The mobile composer fix (inlined into the app HTML)
 │   └── sw.js                 # Service Worker
 ├── public/
 │   ├── manifest.webmanifest  # PWA Manifest
@@ -154,6 +179,14 @@ Zero-dependency suite on Node's built-in runner (`node --test`):
   `/hooks`, websocket upgrades), network-first HTML with its offline fallbacks,
   the `401` to sign-in-page replacement, cache-first statics with the 200/basic
   cache guard, and the `GET_VERSION` / `SKIP_WAITING` messages.
+- `test/mobile-composer.test.mjs` — the mobile composer fix against a fake DOM:
+  Enter inserts a newline on a coarse pointer while the slash and reference menus
+  keep it, a payload-less `beforeinput` falls back to `navigator.clipboard.readText()`
+  and then `read()`, one oversized `insertText` is replayed as a real paste exactly
+  once (and the retry is not claimed a second time), a paste carrying markup is
+  normalised to its plain text, a paste with no editable under it lands in the editor
+  last typed in, an insertion the editor drops is measured and re-sent exactly once,
+  and the module ships no diagnostic overlay.
 - `test/host.test.mjs` — route registration (sw, manifest, 4 icons, version),
   response headers, the index-HTML script injection, and the effect cleanup
   used on HMR unmounts.

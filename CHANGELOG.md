@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.5
+
+- Mobile composer: the diagnostic probe buttons, the plain `field` comparison
+  editables and the trace panel are gone. They existed to close the Android
+  clipboard-panel paste report, which 1.1.4 resolved and a device test confirmed, and
+  they were shipping an overlay to every phone. Git history keeps them if a paste
+  regression ever needs them again; a test now asserts the module carries no
+  `data-dsh-pwa-probe` / `data-dsh-pwa-diagnostic` element.
+- Mobile composer: the `origin` strings that only fed that trace went with it.
+- README: the Android requirements for the keyboard's clipboard panel (install from
+  Chrome; images need `chrome://flags/#enable-android-media-insertion`).
+
 ## 1.1.4
 
 - Mobile composer: an insertion is measured instead of trusted. The composer

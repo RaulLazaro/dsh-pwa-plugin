@@ -93,7 +93,7 @@ class StubFile {
   }
 }
 
-/** Enough of an element for the probe controls and the diagnostic panel. */
+/** Enough of an element for the composer: listeners, attributes, children. */
 function makeElement(tag) {
   const listeners = new Map();
   const el = {
@@ -548,76 +548,6 @@ test('a clipboard holding no image is reported, never guessed at', async () => {
   assert.equal(root.dispatched.length, 0, 'nothing may be dispatched when the clipboard holds no image');
 });
 
-function probeControl(body, name) {
-  return body.children.find((child) => child.attributes['data-dsh-pwa-probe'] === name);
-}
-
-function diagPanel(body) {
-  return body.children.find((child) => child.attributes['data-dsh-pwa-diagnostic'] !== undefined);
-}
-
-test('the probe arms a window and captures what the normal path ignores', async () => {
-  const { document, body, root } = await load({ coarse: true });
-  const button = probeControl(body, 'arm');
-  assert.ok(button, 'a coarse pointer must get the probe control');
-
-  const typing = new StubEvent('beforeinput', {
-    inputType: 'insertText',
-    data: 'a',
-    bubbles: true,
-    cancelable: true,
-  });
-  typing.target = root;
-  document.fire('beforeinput', typing);
-  assert.equal(
-    diagPanel(body),
-    undefined,
-    'ordinary typing must never raise the panel, which is what made the last trace unreadable'
-  );
-
-  button.dispatch('click', new StubEvent('click', { bubbles: true, cancelable: true }));
-  const panel = diagPanel(body);
-  assert.ok(panel, 'arming must show the panel');
-  assert.match(panel.textContent, /ARMED 25s/, 'the panel must say the window is open');
-
-  const pasted = new StubEvent('beforeinput', {
-    inputType: 'insertText',
-    data: 'b',
-    bubbles: true,
-    cancelable: true,
-  });
-  pasted.target = root;
-  document.fire('beforeinput', pasted);
-  assert.match(
-    diagPanel(body).textContent,
-    /bi insertText composer/,
-    'every input type is captured while the window is open'
-  );
-});
-
-test('the probe reports how many lines its window captured', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { document, body, root } = await load({ coarse: true });
-  probeControl(body, 'arm').dispatch('click', new StubEvent('click', { bubbles: true }));
-  const captured = new StubEvent('beforeinput', {
-    inputType: 'insertText',
-    data: 'x',
-    bubbles: true,
-    cancelable: true,
-  });
-  captured.target = root;
-  document.fire('beforeinput', captured);
-  t.mock.timers.tick(26000);
-
-  const text = diagPanel(body).textContent;
-  assert.match(text, /window closed: \d+ line\(s\) captured/);
-  assert.doesNotMatch(
-    text,
-    /window closed: 0 line/,
-    'the closing line must count the events the window saw, because zero is the finding'
-  );
-});
-
 test('a paste carrying markup is normalised to its plain text', async () => {
   const { document, root } = await load({ coarse: true });
   const transfer = new StubDataTransfer();
@@ -768,36 +698,6 @@ test('an ordinary keystroke is left to the editor', async () => {
   assert.equal(root.dispatched.length, 0);
 });
 
-test('the probe records what a select-all did to the selection', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { document, body, root } = await load({ coarse: true });
-  probeControl(body, 'arm').dispatch('click', new StubEvent('click', { bubbles: true }));
-
-  document.getSelection = () => ({ toString: () => 'ALL OF IT', anchorNode: root });
-  document.fire('selectionchange', new StubEvent('selectionchange', {}));
-  t.mock.timers.tick(400);
-  assert.match(
-    diagPanel(body).textContent,
-    /sel 9 chars lex=1/,
-    'the selection the browser made must be visible, because Select all dispatches no input event'
-  );
-
-  // The failing case has to look different from the working one.
-  document.getSelection = () => ({ toString: () => '', anchorNode: null });
-  document.fire('selectionchange', new StubEvent('selectionchange', {}));
-  t.mock.timers.tick(400);
-  assert.match(diagPanel(body).textContent, /sel 0 chars lex=0/, 'a selection that never happened must read as zero');
-});
-
-test('the probe takes a selection reading outside a window', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { document, body } = await load({ coarse: true });
-  document.getSelection = () => ({ toString: () => 'IGNORED', anchorNode: null });
-  document.fire('selectionchange', new StubEvent('selectionchange', {}));
-  t.mock.timers.tick(400);
-  assert.equal(diagPanel(body), undefined, 'nothing is traced outside an armed window');
-});
-
 /** The one insertText channel the composer cannot refuse, with the editor watching. */
 function androidPasteInto(document, root, text, inputType = 'insertFromPaste') {
   const transfer = new StubDataTransfer();
@@ -853,8 +753,8 @@ test('text that lands and is then dropped by the editor is put back once', async
   const block = 'VANISHES ' + 'z'.repeat(120);
   androidPasteInto(document, root, block);
 
-  // The device's shape: the text renders (ed=505 on the panel) and the editor
-  // then empties it (ed=0), which 1.1.3 reported as "composer consumed".
+  // The device's shape: the text renders (the composer reported ed=505) and the
+  // editor then empties it (ed=0), which 1.1.3 read as "composer consumed".
   assert.equal(root.textContent, block);
   t.mock.timers.tick(100);
   assert.equal(root.textContent, '', 'the editor dropped text it never had in its model');
@@ -901,16 +801,24 @@ test('the retry is not claimed a second time by the bulk-paste rule', async (t) 
   assert.equal(root.dispatched.length, 1, 'a re-claimed block would have dispatched a second synthetic paste');
 });
 
-test('the build the panel prints is the version of this package', async () => {
-  const [composer, pkg] = await Promise.all([
-    readFile(new URL('../src/mobile-composer.js', import.meta.url), 'utf-8'),
-    readFile(new URL('../package.json', import.meta.url), 'utf-8'),
-  ]);
-  const declared = /var BUILD = '([^']+)'/.exec(composer);
-  assert.notEqual(declared, null, 'the ARMED line prints a build, so the constant has to exist');
-  assert.equal(
-    declared[1],
-    JSON.parse(pkg).version,
-    'a screenshot of the panel names the code behind it only while these two agree'
+/**
+ * The probe buttons, the `field` comparison editables and the trace panel were
+ * the instrumentation for the paste investigation (closed in 1.1.4). Shipping
+ * them would put an overlay on every phone, so the module is asserted not to
+ * carry them any more.
+ */
+test('the composer ships no diagnostic probe or trace panel', async () => {
+  const source = await readFile(new URL('../src/mobile-composer.js', import.meta.url), 'utf-8');
+  assert.doesNotMatch(
+    source,
+    /data-dsh-pwa-probe|data-dsh-pwa-diagnostic/,
+    'the probe controls and the trace panel must not come back',
   );
+
+  const { body } = await load({ coarse: true });
+  const overlaid = body.children.filter((child) => {
+    const attrs = child.attributes ?? {};
+    return attrs['data-dsh-pwa-probe'] !== undefined || attrs['data-dsh-pwa-diagnostic'] !== undefined;
+  });
+  assert.deepEqual(overlaid, [], 'a coarse pointer must get no diagnostics overlay');
 });
