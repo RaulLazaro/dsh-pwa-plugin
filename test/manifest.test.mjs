@@ -36,6 +36,18 @@ test('every icon src exists on disk under public/', () => {
   }
 });
 
+test('the manifest does NOT pin an orientation, so the device lock wins', () => {
+  // Chrome ignores the OS rotation lock inside an installed PWA whenever the
+  // manifest declares an orientation, and that includes "any". Omitting the
+  // member makes the browser apply no lock at all, so the system lock governs
+  // and a user who locked portrait stays in portrait.
+  assert.equal(
+    Object.hasOwn(manifest, 'orientation'),
+    false,
+    'an explicit orientation (even "any") overrides the Android rotation lock in standalone mode'
+  );
+});
+
 test('theme and background colors are valid hex', () => {
   for (const key of ['theme_color', 'background_color']) {
     assert.match(manifest[key], /^#[0-9a-f]{6}$/i, `${key} must be a #rrggbb color`);
