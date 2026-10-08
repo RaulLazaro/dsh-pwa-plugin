@@ -15,7 +15,13 @@ PWA plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) that adds 
 
 ### 1. Add as a dependency
 
-In your DSH web profile's `package.json`:
+From npm (once published):
+
+```bash
+npm install dsh-pwa-plugin
+```
+
+Or, for a local checkout, in your DSH web profile's `package.json`:
 
 ```json
 {

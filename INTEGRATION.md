@@ -4,7 +4,9 @@
 
 ### 1. Add the dependency
 
-In your DSH web profile's `package.json`:
+From npm: `npm install dsh-pwa-plugin`.
+
+For a local checkout, in your DSH web profile's `package.json`:
 
 ```json
 {

@@ -4,5 +4,6 @@ package-lock.json
 .git/
 .github/
 example/
+test/
 scripts/
-CHANGELOG.md
+

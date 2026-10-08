@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.2
+
+- Cache names now embed the package version: the host stamps it into `/sw.js` at serve time, so upgrading the package purges caches from older versions automatically (no more hand-bumped `vN` strings)
+- Resilient pre-cache install: each URL is added individually, so one missing asset can no longer reject the atomic `cache.addAll` and leave the worker redundant forever
+- Service worker now bypasses DSH's dynamic routes registered outside `/api` (`/auth-api`, `/oauth`, `/open-in-app`, `/dsh-pwa`), keeping identity JSON, OAuth callbacks and the application catalog out of the cache
+- Strict store guard: `5xx` navigations and any response marked `Cache-Control: no-store` are never cached (both HTML and static branches)
+- Injected registration script reloads only on genuine updates: the first-install `clients.claim()` no longer bounces the first page load, and duplicate `controllerchange` events reload at most once
+- npm metadata: `repository`, `bugs`, `homepage` and `engines` (Node >= 20) added; `keywords` expanded; `CHANGELOG.md` now ships in the package
+- Tests: 26 -> 35 (`node --test test/*.mjs`)
+
 ## 1.1.1
 
 - Fix `TypeError: Failed to execute 'put' on 'Cache': Request scheme 'chrome-extension' is unsupported` — skip non-HTTP(S) schemes early
