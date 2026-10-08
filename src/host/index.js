@@ -11,6 +11,15 @@ export function apply(ctx) {
   ctx.effect(() => {
     const { webServer } = ctx;
 
+    const pkgPath = join(__dirname, '..', '..', 'package.json');
+    function readPackage() {
+      try {
+        return JSON.parse(readFileSync(pkgPath, 'utf-8'));
+      } catch {
+        return null;
+      }
+    }
+
     // 1. Serve /sw.js — service worker with no-cache headers
     const swSource = join(__dirname, '..', 'sw.js');
     const disposeSw = webServer.register({
@@ -18,7 +27,11 @@ export function apply(ctx) {
       path: '/sw.js',
       handler: async (_req, res) => {
         try {
-          const content = readFileSync(swSource, 'utf-8');
+          // Stamp the cache names with the package version so upgrading the
+          // package invalidates (and activate purges) every older cache.
+          const version = readPackage()?.version ?? 'unknown';
+          const content = readFileSync(swSource, 'utf-8')
+            .replaceAll('__DSH_PWA_CACHE_VERSION__', version);
           res.writeHead(200, {
             'Content-Type': 'application/javascript; charset=utf-8',
             'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -90,6 +103,18 @@ export function apply(ctx) {
       const script = `<script>
 (function() {
   if (!('serviceWorker' in navigator)) return;
+  // Captured before registering: on the very first visit there is no
+  // controller yet, and this worker claims existing clients right after
+  // install. That claim fires controllerchange too, and reloading there
+  // would bounce the user's very first page load.
+  var hadController = !!navigator.serviceWorker.controller;
+  var refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', function() {
+    if (!hadController) { hadController = true; return; }
+    if (refreshing) return;
+    refreshing = true;
+    window.location.reload();
+  });
   navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function(reg) {
     console.log('[DSH PWA] SW registered, scope:', reg.scope);
     setInterval(function() { reg.update(); }, 3600000);
@@ -103,9 +128,6 @@ export function apply(ctx) {
       });
     });
   }).catch(function(e) { console.log('[DSH PWA] SW failed:', e); });
-  navigator.serviceWorker.addEventListener('controllerchange', function() {
-    window.location.reload();
-  });
 })();
 </script>`;
       const i = html.lastIndexOf('</body>');
@@ -113,19 +135,17 @@ export function apply(ctx) {
     });
 
     // 5. Version check endpoint
-    const pkgPath = join(__dirname, '..', '..', 'package.json');
     const disposeVersion = webServer.register({
       kind: 'exact',
       path: '/dsh-pwa/version',
       handler: async (_req, res) => {
-        try {
-          const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ version: pkg.version, name: pkg.name }));
-        } catch {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ version: 'unknown', name: 'dsh-pwa-plugin' }));
-        }
+        const pkg = readPackage();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(
+          pkg
+            ? { version: pkg.version, name: pkg.name }
+            : { version: 'unknown', name: 'dsh-pwa-plugin' }
+        ));
       }
     });
 

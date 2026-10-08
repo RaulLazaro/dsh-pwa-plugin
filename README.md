@@ -6,7 +6,8 @@ PWA plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) that adds 
 
 - **Service Worker** with smart caching strategy
 - **PWA Manifest** with proper maskable icons
-- **Automatic updates** — silently activates new versions
+- **Automatic updates** — new versions activate silently and reload the page exactly once (a first-ever visit never reloads)
+- **Versioned caches** — cache names carry the package version, so upgrading the plugin purges stale caches automatically
 - **Offline-first** for static assets
 - **Official DSH whale icon** — derived from the upstream SVG favicon
 
@@ -60,20 +61,22 @@ This reads the official `public/favicon.svg` and produces:
 
 ## How It Works
 
-1. The host plugin serves `/sw.js`, `/manifest.webmanifest`, and icon files
+1. The host plugin serves `/sw.js` (stamped with the package version), `/manifest.webmanifest`, and icon files
 2. It injects a service worker registration script into the HTML
-3. The service worker caches static assets (including icons) for offline use
+3. The service worker pre-caches static assets (one failing URL never aborts the install) and caches them for offline use
 4. The manifest enables installing the app as a PWA
-5. Updates are detected automatically and silently activated
+5. Updates are detected automatically and silently activated; the page reloads once per update
 6. DSH's built-in `/favicon.svg` is used as-is (not overridden)
 
 ## Caching Strategy
 
 | Resource Type | Strategy | Description |
 |---------------|----------|-------------|
-| HTML | Network-first | Always tries to fetch the latest version |
-| JS/CSS/Fonts/Images | Cache-first | Serves from cache if available |
-| API calls | Not cached | Always goes to the network |
+| HTML | Network-first | Always fetches the latest version; only storable `200` responses become the offline fallback |
+| JS/CSS/Fonts/Images | Cache-first | Kept in a cache named after the package version, so an upgrade invalidates it without a manual version bump |
+| Dynamic DSH routes | Not intercepted | `/api`, `/auth-api`, `/oauth`, `/open-in-app`, `/plugins`, `/ws`, `/hooks` and `/dsh-pwa` always reach the network |
+| `Cache-Control: no-store` | Never cached | The server's directive wins over the service worker |
+| API/WebSocket | Not cached | Always goes to the network |
 
 ## Limitations
 
@@ -113,13 +116,16 @@ Zero-dependency suite on Node's built-in runner (`node --test`):
 - `test/manifest.test.mjs` — manifest required fields, icon densities (regular +
   maskable at 192/512) and that every icon file exists on disk.
 - `test/sw.test.mjs` — the service worker evaluated against a fake `self`:
-  install/activate cache lifecycle, the bypass rules (non-GET, non-HTTP schemes,
-  `/api`, `/plugins`, `/ws`, `/hooks`, websocket upgrades), network-first HTML
-  with its offline fallbacks, cache-first statics with the 200/basic cache guard,
-  and the `GET_VERSION` / `SKIP_WAITING` messages.
+  install/activate cache lifecycle (per-URL resilient pre-cache, versioned
+  cache names, orphan cleanup), the bypass rules (non-GET, non-HTTP schemes,
+  `/api`, `/auth-api`, `/oauth`, `/open-in-app`, `/plugins`, `/ws`, `/hooks`,
+  `/dsh-pwa`, websocket upgrades), network-first HTML with its offline
+  fallbacks, cache-first statics with the store guard (`200`/`basic`/
+  `no-store`), and the `GET_VERSION` / `SKIP_WAITING` messages.
 - `test/host.test.mjs` — route registration (sw, manifest, 4 icons, version),
-  response headers, the index-HTML script injection, and the effect cleanup
-  used on HMR unmounts.
+  response headers, the package-version stamping of `/sw.js`, the
+  index-HTML script injection, the registration script's reload guard
+  (executed in a sandboxed VM), and the effect cleanup used on HMR unmounts.
 
 ## License
 

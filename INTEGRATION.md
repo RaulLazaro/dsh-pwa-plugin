@@ -53,14 +53,21 @@ dsh web
 | Request Type | Strategy | Details |
 |-------------|----------|---------|
 | HTML pages | Network-first | Fetches from network first, falls back to cache |
-| Static assets | Cache-first | Serves from cache if available, otherwise fetches |
-| API/WebSocket | Passthrough | Never cached, always goes to network |
+| Static assets | Cache-first | Served from a cache named after the package version (purged automatically on upgrade) |
+| `/api`, `/auth-api`, `/oauth`, `/open-in-app`, `/plugins`, `/ws`, `/hooks`, `/dsh-pwa` | Passthrough | DSH's dynamic routes are never intercepted or cached |
+| `Cache-Control: no-store` | Passthrough | The server's directive wins; the response is never stored |
+| Other API/WebSocket | Passthrough | Never cached, always goes to network |
 
 ### Update Flow
 
 1. The injected script calls `reg.update()` every hour
 2. When the service worker detects a new version, it activates silently
-3. On `controllerchange`, the page auto-reloads with the new version
+3. On `controllerchange`, the page reloads once to pick up the new version —
+   the very first install claims the page without reloading it, so a visitor's
+   first load is never bounced, and duplicate events never reload twice
+4. Cache names embed the package version (stamped into `/sw.js` when it is
+   served), so upgrading the plugin purges the previous version's caches on
+   activation without a manual version bump
 
 ## Icons
 
