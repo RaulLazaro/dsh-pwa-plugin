@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -69,7 +70,7 @@ test('apply registers the full route set as exact matches', () => {
   for (const { kind } of routes.values()) assert.equal(kind, 'exact');
 });
 
-test('/sw.js is served with no-cache and the real source', async () => {
+test('/sw.js is served with no-cache and the version-stamped source', async () => {
   const { ctx, routes } = makeCtx();
   apply(ctx);
   const res = makeRes();
@@ -77,7 +78,25 @@ test('/sw.js is served with no-cache and the real source', async () => {
   assert.equal(res.code, 200);
   assert.match(res.headers['Content-Type'], /application\/javascript/);
   assert.match(res.headers['Cache-Control'], /no-store/);
-  assert.equal(res.body, readFileSync(join(root, 'src', 'sw.js'), 'utf-8'));
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'));
+  const expected = readFileSync(join(root, 'src', 'sw.js'), 'utf-8')
+    .replaceAll('__DSH_PWA_CACHE_VERSION__', pkg.version);
+  assert.equal(res.body, expected);
+});
+
+test('/sw.js substitutes the cache-version placeholder with the package version', async () => {
+  const { ctx, routes } = makeCtx();
+  apply(ctx);
+  const res = makeRes();
+  await routes.get('/sw.js').handler({}, res);
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'));
+  assert.equal(res.code, 200);
+  assert.ok(
+    !res.body.includes('__DSH_PWA_CACHE_VERSION__'),
+    'the raw placeholder must never reach the browser'
+  );
+  assert.ok(res.body.includes(`dsh-static-${pkg.version}`), 'static cache must carry the package version');
+  assert.ok(res.body.includes(`dsh-pwa-${pkg.version}`), 'runtime cache must carry the package version');
 });
 
 test('/manifest.webmanifest is served as manifest JSON overriding the built-in', async () => {
@@ -134,6 +153,78 @@ test('index tap injects the registration script before </body>', () => {
   const appended = tap(orphan);
   assert.ok(appended.startsWith(orphan));
   assert.ok(appended.includes('serviceWorker.register'));
+});
+
+
+// Boot the exact script the index tap injects inside a sandboxed VM, so the
+// registration flow is exercised behaviourally instead of by regex alone.
+function bootRegistration({ controller = null, registerError = null } = {}) {
+  const events = {};
+  const registerCalls = [];
+  const reloads = [];
+  const logs = [];
+  const reg = {
+    scope: '/',
+    addEventListener() {},
+    update() {},
+  };
+  const sandbox = {
+    navigator: {
+      serviceWorker: {
+        controller,
+        addEventListener(type, fn) { events[type] = fn; },
+        register(url, opts) {
+          registerCalls.push({ url, opts });
+          return registerError ? Promise.reject(registerError) : Promise.resolve(reg);
+        },
+      },
+    },
+    window: { location: { reload() { reloads.push(1); } } },
+    setInterval: () => 0,
+    console: { log: (...args) => logs.push(args.join(' ')) },
+  };
+  const { ctx, taps } = makeCtx();
+  apply(ctx);
+  const html = taps[0]('<html><body></body></html>');
+  const match = html.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(match, 'injected registration script missing');
+  vm.runInNewContext(match[1], sandbox);
+  return { events, registerCalls, reloads, logs };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test('the injected script registers /sw.js at root scope', async () => {
+  const { registerCalls, events } = bootRegistration();
+  await flush();
+  assert.equal(registerCalls.length, 1);
+  assert.equal(registerCalls[0].url, '/sw.js');
+  assert.equal(registerCalls[0].opts.scope, '/', 'registration must keep the root scope');
+  assert.equal(typeof events.controllerchange, 'function', 'controllerchange listener required');
+});
+
+test('first visit: the install claim does not reload the page', async () => {
+  const { events, reloads } = bootRegistration({ controller: null });
+  await flush();
+  events.controllerchange(); // clients.claim() right after the first install
+  assert.equal(reloads.length, 0, 'a first-time clients.claim() must not bounce the page');
+  events.controllerchange(); // a real update activating later in the same page lifetime
+  assert.equal(reloads.length, 1, 'genuine updates must still reload afterwards');
+});
+
+test('an update reloads exactly once even if controllerchange fires twice', async () => {
+  const { events, reloads } = bootRegistration({ controller: { scriptURL: 'https://dsh.local/sw.js' } });
+  await flush();
+  events.controllerchange();
+  events.controllerchange();
+  assert.equal(reloads.length, 1, 'exactly one reload per activated update');
+});
+
+test('a failed registration is contained and logged', async () => {
+  const { logs, reloads } = bootRegistration({ registerError: new Error('insecure context') });
+  await flush();
+  assert.ok(logs.some((line) => line.includes('SW failed')), 'failure must be visible in the console');
+  assert.equal(reloads.length, 0, 'a failed registration must not reload anything');
 });
 
 test('the effect cleanup disposes every route and the tap (HMR unmount)', () => {
