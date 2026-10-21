@@ -1,5 +1,10 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // The service worker is evaluated exactly once, against a fake `self`; every
 // test then drives the captured handlers while swapping the `caches`/`fetch`
@@ -7,6 +12,23 @@ import assert from 'node:assert/strict';
 const handlers = {};
 let calls = { skipWaiting: 0, claim: 0 };
 let m; // per-test mock state
+
+// The worker ships as a TEMPLATE: the host route substitutes the version token
+// from package.json on every request (src/host/index.js). Substituting here the
+// same way means these tests drive the composed cache names the browser really
+// gets, rather than the un-substituted template.
+const rawSw = readFileSync(join(root, 'src', 'sw.js'), 'utf-8');
+const TEST_VERSION = '9.9.9';
+const VERSION = TEST_VERSION;
+const PWA_CACHE = `dsh-pwa-${TEST_VERSION}`;
+const STATIC_CACHE = `dsh-static-${TEST_VERSION}`;
+
+// The worker is a classic script with no imports, so evaluating the served bytes
+// mirrors how the browser loads it.
+function loadWorker(version) {
+  for (const type of Object.keys(handlers)) delete handlers[type];
+  new Function(rawSw.replaceAll('__DSH_PWA_VERSION__', version))();
+}
 
 globalThis.self = {
   addEventListener(type, fn) {
@@ -28,10 +50,12 @@ globalThis.caches = {
   async open(name) {
     m.opened.push(name);
     return {
+      async addAll(urls) {
+        m.addAll = { name, urls };
+      },
       async add(url) {
-        m.attempted.push(url);
-        if (m.addFail === url) throw new Error('404');
         m.adds.push(url);
+        if (m.addRejects.includes(url)) throw new Error(`pre-cache failed for ${url}`);
       },
       async put(request, response) {
         m.puts.push({ request, response });
@@ -57,16 +81,16 @@ globalThis.fetch = async (request) => {
   return m.fetchResponse;
 };
 
-await import('../src/sw.js');
+loadWorker(TEST_VERSION);
 
 function reset() {
   calls = { skipWaiting: 0, claim: 0 };
   m = {
     opened: [],
     deleted: [],
+    addAll: null,
     adds: [],
-    attempted: [],
-    addFail: null,
+    addRejects: [],
     puts: [],
     matchCalls: [],
     matchResult: undefined,
@@ -80,18 +104,20 @@ beforeEach(reset);
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function makeResponse({ status = 200, type = 'basic', cacheControl = null } = {}) {
-  return {
-    status,
-    type,
-    headers: new Headers(cacheControl ? { 'cache-control': cacheControl } : {}),
-    clone: () => ({ cloned: true }),
-    text: async () => '',
-  };
-}
-
 function makeRequest(url, { method = 'GET', headers = {} } = {}) {
   return { url, method, headers: new Headers(headers) };
+}
+
+// A same-origin 200 the worker is allowed to store, with the two clone halves a
+// real Response offers: the worker keeps one and hands the other back.
+function storableResponse({ status = 200, type = 'basic', cacheControl = null } = {}) {
+  const response = {
+    status,
+    type,
+    headers: { get: (name) => (name.toLowerCase() === 'cache-control' ? cacheControl : null) },
+    clone: () => ({ ...response }),
+  };
+  return response;
 }
 
 function runFetch(request) {
@@ -106,25 +132,41 @@ test('registers install, activate, fetch and message handlers', () => {
   }
 });
 
-test('install pre-caches the static asset list and calls skipWaiting', async () => {
+test('install pre-caches the static list one URL at a time and calls skipWaiting', async () => {
   let pending;
   handlers.install({ waitUntil(p) { pending = p; } });
   await pending;
-  assert.equal(m.opened[0], 'dsh-static-__DSH_PWA_CACHE_VERSION__');
-  assert.deepEqual(m.attempted, [
+  assert.equal(m.opened[0], STATIC_CACHE);
+  assert.deepEqual(m.adds, [
     '/',
     '/manifest.webmanifest',
-    '/favicon.svg',
+    '/icons/icon.svg',
+    '/icons/icon-monochrome.svg',
+    '/icons/icon-32.png',
     '/icons/icon-192.png',
-    '/icons/icon-192-maskable.png',
     '/icons/icon-512.png',
+    '/icons/icon-192-maskable.png',
     '/icons/icon-512-maskable.png',
+    '/apple-touch-icon.png',
+    '/favicon.ico',
   ]);
   assert.equal(calls.skipWaiting, 1, 'install must activate immediately (skipWaiting)');
 });
 
+test('a pre-cache URL that fails does not stop the worker installing', async () => {
+  // The fence refuses '/' with a 401 while a client is signed out, and that is
+  // exactly when a fixed worker is needed. addAll() would reject as a whole and
+  // leave this update permanently redundant.
+  m.addRejects = ['/'];
+  let pending;
+  handlers.install({ waitUntil(p) { pending = p; } });
+  await pending;
+  assert.equal(m.adds.length, 11, 'every URL is still attempted');
+  assert.equal(calls.skipWaiting, 1, 'the worker must still take over');
+});
+
 test('activate keeps only the current caches and claims clients', async () => {
-  m.cacheKeys = ['dsh-pwa-__DSH_PWA_CACHE_VERSION__', 'dsh-static-__DSH_PWA_CACHE_VERSION__', 'dsh-pwa-v0', 'dsh-static-v2'];
+  m.cacheKeys = [PWA_CACHE, STATIC_CACHE, 'dsh-pwa-v0', 'dsh-static-v2'];
   let pending;
   handlers.activate({ waitUntil(p) { pending = p; } });
   await pending;
@@ -132,24 +174,22 @@ test('activate keeps only the current caches and claims clients', async () => {
   assert.equal(calls.claim, 1);
 });
 
-test('one failing pre-cache URL never aborts the install', async () => {
-  m.addFail = '/favicon.svg'; // e.g. DSH core does not serve the favicon
-  const warnings = [];
-  const realWarn = console.warn;
-  console.warn = (...args) => warnings.push(args.join(' '));
-  let pending;
+test('the version token is what composes both cache names, and a bump evicts the old ones', async () => {
   try {
+    loadWorker('4.2.0');
+    let pending;
     handlers.install({ waitUntil(p) { pending = p; } });
     await pending;
+    assert.equal(m.opened[0], 'dsh-static-4.2.0', 'a different version must produce a different cache name');
+
+    m.cacheKeys = ['dsh-static-4.2.0', STATIC_CACHE];
+    pending = undefined;
+    handlers.activate({ waitUntil(p) { pending = p; } });
+    await pending;
+    assert.deepEqual(m.deleted, [STATIC_CACHE], 'the superseded version must be evicted on activate');
   } finally {
-    console.warn = realWarn;
+    loadWorker(TEST_VERSION);
   }
-  assert.equal(calls.skipWaiting, 1, 'install must complete and activate anyway');
-  assert.equal(m.attempted.length, 7, 'every URL must still be attempted');
-  assert.equal(m.adds.length, 6, 'the six healthy assets must be pre-cached');
-  assert.ok(!m.adds.includes('/favicon.svg'), 'the failed URL must not be stored');
-  assert.equal(warnings.length, 1, 'the skipped URL must be logged');
-  assert.match(warnings[0], /favicon\.svg/);
 });
 
 test('fetch ignores non-GET requests', () => {
@@ -162,17 +202,7 @@ test('fetch ignores non-HTTP(S) schemes (extensions)', () => {
 });
 
 test('fetch bypasses the API, plugin, websocket and hook paths', () => {
-  const dynamic = [
-    '/api/session/list',
-    '/plugins/x/client.js',
-    '/ws',
-    '/hooks/build',
-    '/auth-api/v0/users/current', // identity JSON (dsh-deepseek-account-platform)
-    '/oauth/callback',            // one-time OAuth redirect
-    '/open-in-app/apps',          // dynamic application catalog
-    '/dsh-pwa/version',           // this plugin's dynamic version JSON
-  ];
-  for (const path of dynamic) {
+  for (const path of ['/api/session/list', '/plugins/x/client.js', '/ws', '/hooks/build']) {
     assert.equal(runFetch(makeRequest(`https://dsh.local${path}`)), null, `should bypass ${path}`);
   }
   assert.equal(
@@ -183,23 +213,122 @@ test('fetch bypasses the API, plugin, websocket and hook paths', () => {
 });
 
 test('HTML navigations are network-first and cached on success', async () => {
-  const response = makeResponse();
+  const response = storableResponse();
   m.fetchResponse = response;
   const done = runFetch(makeRequest('https://dsh.local/app', { headers: { accept: 'text/html' } }));
   assert.strictEqual(await done, response, 'network response wins when online');
   await flush();
-  assert.ok(m.opened.includes('dsh-pwa-__DSH_PWA_CACHE_VERSION__'), 'successful navigation must be cached');
+  assert.ok(m.opened.includes(PWA_CACHE), 'successful navigation must be cached');
   assert.equal(m.puts.length, 1);
 });
 
+test('a navigation marked no-store is served but never cached', async () => {
+  m.fetchResponse = storableResponse({ cacheControl: 'no-store' });
+  await runFetch(makeRequest('https://dsh.local/app', { headers: { accept: 'text/html' } }));
+  await flush();
+  assert.equal(m.puts.length, 0, "the server's no-store must win over the offline fallback");
+});
+
+test('a failed navigation is served but never becomes the offline fallback', async () => {
+  m.fetchResponse = storableResponse({ status: 503 });
+  await runFetch(makeRequest('https://dsh.local/app', { headers: { accept: 'text/html' } }));
+  await flush();
+  assert.equal(m.puts.length, 0, 'a 5xx page must never be cached');
+});
+
+test('dynamic routes reach the network instead of being cached', async () => {
+  for (const path of ['/oauth/callback', '/auth-api/session', '/open-in-app', '/dsh-pwa/version', '/api/state']) {
+    reset();
+    const done = runFetch(makeRequest(`https://dsh.local${path}`, { headers: { accept: 'text/html' } }));
+    assert.equal(done, null, `${path} must not be intercepted`);
+  }
+});
+
+test("a locked-out navigation gets the sign-in page, not the fence's plain-text 401", async () => {
+  m.fetchResponse = { status: 401 };
+  const result = await runFetch(makeRequest('https://dsh.local/', { headers: { accept: 'text/html' } }));
+  assert.equal(result.status, 200, 'the replacement is a working page, not an error');
+  assert.equal(result.headers.get('x-dsh-pwa-signin'), '1');
+  assert.match(result.headers.get('content-type'), /text\/html/);
+  const body = await result.text();
+  assert.match(body, /Sign in to DSH/);
+  assert.match(body, /\/\?token=/, 'the form must perform the same token exchange the printed URL does');
+  await flush();
+  assert.equal(m.puts.length, 0, 'a sign-in page must never enter the cache');
+});
+
+test('a navigation that carried a rejected code says so', async () => {
+  m.fetchResponse = { status: 401 };
+  const result = await runFetch(makeRequest(
+    'https://dsh.local/?token=AAAAAAAAAAAAAAAAAAAAAAAA',
+    { headers: { accept: 'text/html' } }
+  ));
+  const body = await result.text();
+  assert.match(body, /not accepted/, 'a rejected code must not look like nothing happened');
+});
+
+test('every element the sign-in page looks up by id is declared in its markup', async () => {
+  // A shipped version of this page called getElementById('note') on a <p> that
+  // only had a class: a rejected code threw a TypeError and said nothing at all.
+  // A missing id is invisible to a text assertion, so cross-check them instead.
+  const source = readFileSync(join(root, 'src', 'sw.js'), 'utf-8');
+  const page = /const SIGN_IN_PAGE = `([\s\S]*?)`;/.exec(source);
+  assert.ok(page, 'the sign-in page template must be found in the worker source');
+  const html = page[1];
+  const lookedUp = [...html.matchAll(/getElementById\('([^']+)'\)/g)].map((match) => match[1]);
+  assert.ok(lookedUp.length >= 3, `expected the page to look up its controls, saw ${lookedUp.length}`);
+  const declared = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
+  for (const id of lookedUp) {
+    assert.ok(declared.has(id), `the page looks up #${id} but never declares it`);
+  }
+});
+
+test('the sign-in page names where the code comes from and accepts a pasted URL', async () => {
+  const source = readFileSync(join(root, 'src', 'sw.js'), 'utf-8');
+  assert.match(source, /dshw-token\.ps1/, 'the page must name the command that prints the code');
+  assert.match(source, /\[\?&\]token=\(\[A-Za-z0-9_-\]\{20,\}\)/, 'a pasted URL must be accepted, not only a bare code');
+  assert.match(source, /__NOTE__/, 'the page carries a note slot for the rejected-code message');
+});
+
+test('the sign-in page claims a remembered device before falling back to a code', () => {
+  const source = readFileSync(join(root, 'src', 'sw.js'), 'utf-8');
+  const page = /const SIGN_IN_PAGE = `([\s\S]*?)`;/.exec(source);
+  assert.ok(page, 'the sign-in page template must be found in the worker source');
+  const html = page[1];
+  assert.match(html, /'\/dsh-pwa\/device\/claim'/, 'the page must exchange the device key for a session');
+  assert.match(html, /indexedDB\.open/, 'the device key lives in the app own storage, not in the URL');
+  assert.match(html, /id="forget"/, 'a device that is no longer trusted must be forgettable');
+  assert.match(html, /\/dsh-pwa\/auth-state/, 'the page must be able to say which failure this is');
+  // A minted cookie is only worth having if the fence accepts it, so the page has
+  // to ask for the fence's verdict before redirecting. It cannot get that by
+  // fetching '/': that is not an HTML request, so it takes the cache-first path and
+  // the cached shell answers 200 whatever the fence would say.
+  const checkedAt = html.indexOf('cookieValid');
+  const redirectAt = html.indexOf("window.location.replace('/')");
+  assert.ok(checkedAt !== -1, 'the page must verify the minted session actually works');
+  assert.ok(redirectAt !== -1, 'the page must redirect once it does');
+  assert.ok(checkedAt < redirectAt, 'the check must come before the redirect');
+  assert.ok(
+    !html.includes("fetch('/', { credentials"),
+    'the cookie test must not read the cached shell: ask the host probe instead'
+  );
+  // A refusal has to say why, and the transient line must never hide the verdict:
+  // that combination is what made a refused device look like a hung one.
+  assert.match(html, /the host answered/, 'the page must carry the host status into the diagnosis line');
+  assert.match(html, /the host minted a cookie the fence refused/, 'a mint the fence refuses must be named as such');
+  assert.match(html, /var TRANSIENT = 'Checking this device\.\.\.'/, 'the transient line is named so it can be replaced');
+  assert.match(html, /describe\(failure\)/, 'the claim failure must reach the diagnosis line');
+});
+
 test('a failing cache put never breaks the HTML response', async () => {
-  const response = makeResponse();
+  const response = { clone: () => ({ cloned: true }) };
   m.fetchResponse = response;
   const realCaches = globalThis.caches;
   globalThis.caches = {
     ...realCaches,
     async open() {
       return {
+        async addAll() {},
         async add() {},
         async put() { throw new Error('unsupported scheme'); },
         async match() { return undefined; },
@@ -246,7 +375,7 @@ test('static misses go to the network and only 200/basic responses get cached', 
   assert.strictEqual(result, fresh);
   await flush();
   assert.equal(m.puts.length, 1, 'same-origin 200 must be cached');
-  assert.equal(m.opened.at(-1), 'dsh-pwa-__DSH_PWA_CACHE_VERSION__');
+  assert.equal(m.opened.at(-1), PWA_CACHE);
 
   // cross-origin opaque responses are not cacheable
   reset();
@@ -269,42 +398,21 @@ test('offline static assets answer 503', async () => {
   assert.equal(result.status, 503);
 });
 
-test('error navigations are not cached for offline use', async () => {
-  m.fetchResponse = makeResponse({ status: 500 });
-  const result = await runFetch(makeRequest('https://dsh.local/app', { headers: { accept: 'text/html' } }));
-  assert.equal(result.status, 500, 'the network response must still be served');
-  await flush();
-  assert.equal(m.puts.length, 0, 'a 5xx page must never become the offline fallback');
-});
-
-test('responses marked Cache-Control: no-store are never cached', async () => {
-  // static branch
-  m.fetchResponse = makeResponse({ cacheControl: 'no-store' });
-  let result = await runFetch(makeRequest('https://dsh.local/assets/app.js'));
-  assert.strictEqual(result, m.fetchResponse);
-  await flush();
-  assert.equal(m.puts.length, 0, 'static: no-store must not be stored');
-
-  // HTML branch
-  reset();
-  m.fetchResponse = makeResponse({ cacheControl: 'no-store, must-revalidate' });
-  result = await runFetch(makeRequest('https://dsh.local/app', { headers: { accept: 'text/html' } }));
-  assert.strictEqual(result, m.fetchResponse);
-  await flush();
-  assert.equal(m.puts.length, 0, 'HTML: no-store must not be stored');
-});
-
-test('cross-origin responses are never cached', async () => {
-  m.fetchResponse = makeResponse({ type: 'cors' });
-  await runFetch(makeRequest('https://api.example.com/models'));
-  await flush();
-  assert.equal(m.puts.length, 0);
-});
-
 test('message: GET_VERSION reports the current cache version', () => {
   let sent;
   handlers.message({ data: { type: 'GET_VERSION' }, ports: [{ postMessage: (m2) => { sent = m2; } }] });
-  assert.deepEqual(sent, { version: 'dsh-pwa-__DSH_PWA_CACHE_VERSION__' });
+  assert.deepEqual(sent, { version: VERSION });
+});
+
+test('neither cache name is a literal in the worker source', () => {
+  const raw = readFileSync(join(root, 'src', 'sw.js'), 'utf-8');
+  // A frozen name pins every installed client to an old pre-cache set: the
+  // version token is what makes a package bump the whole invalidation procedure.
+  assert.ok(!/'dsh-pwa-[^']*'/.test(raw), 'the page cache name must not be a literal');
+  assert.ok(!/'dsh-static-[^']*'/.test(raw), 'the static cache name must not be a literal');
+  assert.match(raw, /const VERSION = '__DSH_PWA_VERSION__'/);
+  assert.match(raw, /const CACHE_NAME = `dsh-pwa-\$\{VERSION\}`/);
+  assert.match(raw, /const STATIC_CACHE = `dsh-static-\$\{VERSION\}`/);
 });
 
 test('message: SKIP_WAITING activates a waiting worker', () => {

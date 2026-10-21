@@ -2,44 +2,78 @@
   "id": "/",
   "name": "DeepSeek Harness",
   "short_name": "DSH",
+  "description": "AI-powered coding assistant with agentic capabilities",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "orientation": "any",
-  "theme_color": "#0f172a",
-  "background_color": "#0f172a",
-  "description": "AI-powered coding assistant with agentic capabilities",
+  "display_override": ["standalone", "minimal-ui"],
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
+  "lang": "en",
+  "dir": "ltr",
+  "theme_color": "#151517",
+  "background_color": "#151517",
   "categories": ["developer", "productivity"],
   "icons": [
     {
-      "src": "/favicon.svg",
+      "src": "/icons/icon.svg?rev=1",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-192.png",
+      "src": "/icons/icon-192.png?rev=1",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-192-maskable.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "maskable"
-    },
-    {
-      "src": "/icons/icon-512.png",
+      "src": "/icons/icon-512.png?rev=1",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-512-maskable.png",
+      "src": "/icons/icon-monochrome.svg?rev=1",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "monochrome"
+    },
+    {
+      "src": "/icons/icon-192-maskable.png?rev=1",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/icon-512-maskable.png?rev=1",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshots/app-chat.png?rev=1",
+      "sizes": "824x1830",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "A conversation with the agent"
+    },
+    {
+      "src": "/screenshots/app-trajectory.png?rev=1",
+      "sizes": "824x1830",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Every step of the run, as a trajectory"
+    },
+    {
+      "src": "/screenshots/app-context.png?rev=1",
+      "sizes": "824x1830",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Where the context went: tokens, timing and cost"
     }
   ],
   "prefer_related_applications": false

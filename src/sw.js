@@ -1,19 +1,24 @@
-// Cache names. The raw source carries a placeholder that src/host/index.js
-// replaces with the package version when serving /sw.js, so every package
-// upgrade produces a byte-new worker whose activate step purges the caches of
-// older versions without anyone hand-bumping a version string here.
-const CACHE_NAME = 'dsh-pwa-__DSH_PWA_CACHE_VERSION__';
-const STATIC_CACHE = 'dsh-static-__DSH_PWA_CACHE_VERSION__';
+// Both cache names are derived from the plugin version, which the host route
+// substitutes into this file on every request. A fixed name would leave an
+// installed client pinned to a previous pre-cache set until it cleared storage
+// by hand, so a version bump is the whole invalidation procedure.
+const VERSION = '__DSH_PWA_VERSION__';
+const CACHE_NAME = `dsh-pwa-${VERSION}`;
+const STATIC_CACHE = `dsh-static-${VERSION}`;
 
 // Assets to pre-cache on install
 const PRE_CACHE_URLS = [
   '/',
   '/manifest.webmanifest',
-  '/favicon.svg',
+  '/icons/icon.svg',
+  '/icons/icon-monochrome.svg',
+  '/icons/icon-32.png',
   '/icons/icon-192.png',
-  '/icons/icon-192-maskable.png',
   '/icons/icon-512.png',
-  '/icons/icon-512-maskable.png'
+  '/icons/icon-192-maskable.png',
+  '/icons/icon-512-maskable.png',
+  '/apple-touch-icon.png',
+  '/favicon.ico'
 ];
 
 // Offline fallback page
@@ -25,10 +30,10 @@ const OFFLINE_PAGE = `
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DSH - Offline</title>
   <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    body { font-family: system-ui, sans-serif; background: #151517; color: #f9fafb; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
     .container { text-align: center; padding: 2rem; }
     h1 { font-size: 2rem; margin-bottom: 0.5rem; }
-    p { color: #94a3b8; margin-top: 0.5rem; }
+    p { color: #cfd3d6; margin-top: 0.5rem; }
   </style>
 </head>
 <body>
@@ -40,15 +45,219 @@ const OFFLINE_PAGE = `
 </body>
 </html>`;
 
+// The dsh web token fence answers a locked-out navigation with a plain-text 401
+// ("reopen the URL printed by dsh web"). In a browser that is fine - the address
+// bar is right there - but an installed app has no address bar, so that body is
+// a dead end. This page is the replacement: it takes the code (or the whole URL
+// printed by dshw-token.ps1) and performs the same token exchange the address
+// bar would, which is what mints the browser-session cookie.
+const SIGN_IN_PAGE = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DSH - sign in</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #151517; color: #f9fafb; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { padding: 1.5rem; width: 100%; max-width: 26rem; }
+    h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+    p { color: #cfd3d6; line-height: 1.5; margin: 0.6rem 0; }
+    code { background: #2c2c2e; padding: 0.1rem 0.35rem; border-radius: 0.25rem; color: #f9fafb; }
+    input { width: 100%; box-sizing: border-box; padding: 0.7rem; border-radius: 0.4rem; border: 1px solid #ffffff1f; background: #232324; color: #f9fafb; font-size: 1rem; }
+    button { margin-top: 0.75rem; width: 100%; padding: 0.7rem; border: 0; border-radius: 0.4rem; background: #f9fafb; color: #151517; font-size: 1rem; }
+    .note { color: #f25a5a; min-height: 1.25rem; margin: 0; }
+    .hint { color: #81858c; font-size: 0.8rem; margin: 0.6rem 0 0; }
+    #forget { background: transparent; border: 1px solid #ffffff1f; color: #cfd3d6; font-size: 0.85rem; padding: 0.45rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Sign in to DSH</h1>
+    <p id="note" class="note">__NOTE__</p>
+    <p>On the machine running dsh, run <code>dshw-token.ps1</code> and paste the code below - the whole URL works too.</p>
+    <form id="f">
+      <input id="t" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="code or URL with token=">
+      <button type="submit">Sign in</button>
+    </form>
+    <button id="forget" type="button" hidden>Forget this device</button>
+    <p id="device" class="hint"></p>
+  </div>
+  <script>
+  (function () {
+    var form = document.getElementById('f');
+    var input = document.getElementById('t');
+    var note = document.getElementById('note');
+    var deviceLine = document.getElementById('device');
+    var forget = document.getElementById('forget');
+    var DB_NAME = 'dsh-pwa';
+    var STORE = 'device';
+
+    function openStore(mode) {
+      return new Promise(function (resolve) {
+        var request = indexedDB.open(DB_NAME, 1);
+        request.onupgradeneeded = function () {
+          if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
+        };
+        request.onsuccess = function () {
+          var db = request.result;
+          if (!db.objectStoreNames.contains(STORE)) { resolve(null); return; }
+          try { resolve(db.transaction(STORE, mode).objectStore(STORE)); } catch (err) { resolve(null); }
+        };
+        request.onerror = function () { resolve(null); };
+      });
+    }
+
+    function readKey() {
+      return openStore('readonly').then(function (store) {
+        if (!store) return '';
+        return new Promise(function (resolve) {
+          var get = store.get('key');
+          get.onsuccess = function () { resolve(typeof get.result === 'string' ? get.result : ''); };
+          get.onerror = function () { resolve(''); };
+        });
+      });
+    }
+
+    function clearKey() {
+      return openStore('readwrite').then(function (store) {
+        if (!store) return false;
+        return new Promise(function (resolve) {
+          var del = store.delete('key');
+          del.onsuccess = function () { resolve(true); };
+          del.onerror = function () { resolve(false); };
+        });
+      });
+    }
+
+    // A verdict replaces the transient line, and a verdict already on the page is
+    // never replaced: that keeps the code-rejected message, which is the more useful
+    // one. The transient line has to be replaceable or a failed device check leaves
+    // the phone claiming it is still checking.
+    var TRANSIENT = 'Checking this device...';
+
+    function say(message, force) {
+      if (!note) return;
+      if (!force && note.textContent !== '' && note.textContent !== TRANSIENT) return;
+      note.textContent = message;
+    }
+
+    // A minted cookie is only worth having if the fence accepts it, so this asks
+    // the host for its verdict. It cannot test the cookie by fetching '/': that is
+    // not an HTML request, so it takes the cache-first path, and the app shell is
+    // already cached - a cached 200 would report success for a cookie the fence
+    // rejects, and the redirect below would loop. The probe route is uncached and
+    // answers with the fence's own validation.
+    function works() {
+      return fetch('/dsh-pwa/auth-state?t=' + Date.now(), {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'x-dsh-pwa-probe': '1' }
+      })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (state) { return !!(state && state.cookieValid === true); })
+        .catch(function () { return false; });
+    }
+
+    // The reason a claim failed is the whole diagnosis, and the two families need
+    // different fixes: a 401 means this host holds no record of the key the device is
+    // sending, while a mint the fence then refuses means the host's own cookie did not
+    // satisfy it. An empty string means the device is trusted again.
+    function claim(key) {
+      return fetch('/dsh-pwa/device/claim', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key: key })
+      }).then(function (response) {
+        if (!response.ok) return 'the host answered ' + response.status + ' for the key this device sent';
+        return works().then(function (valid) {
+          return valid ? '' : 'the host minted a cookie the fence refused';
+        });
+      }).catch(function () { return 'the claim request did not complete'; });
+    }
+
+    // One line saying which failure this is: no cookie, a cookie the fence refused, a
+    // host that cannot mint one at all, or a device key the host does not know. The
+    // reason travels in from the caller, because only it knows why the check ran.
+    function describe(reason) {
+      return fetch('/dsh-pwa/auth-state', { headers: { 'x-dsh-pwa-probe': '1' }, cache: 'no-store' })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (state) {
+          if (!deviceLine) return;
+          var parts = [];
+          if (state && state.authority) parts.push('host ' + state.authority);
+          if (state) {
+            parts.push(state.cookiePresent ? 'a session cookie is present but was refused' : 'no session cookie on this device');
+            if (state.canMint === false) parts.push('this host cannot mint one');
+            if (typeof state.deviceCount === 'number') parts.push(state.deviceCount + ' device(s) enrolled');
+          }
+          if (reason) parts.push(reason);
+          deviceLine.textContent = 'Diagnosis: ' + parts.join(', ') + '.';
+        })
+        .catch(function () {});
+    }
+
+    if (forget) {
+      forget.addEventListener('click', function () {
+        clearKey().then(function () {
+          forget.hidden = true;
+          say('This device was forgotten. Sign in with a code.', true);
+        });
+      });
+    }
+
+    readKey().then(function (key) {
+      if (!key) { describe('no device key is stored on this browser'); return; }
+      say(TRANSIENT);
+      claim(key).then(function (failure) {
+        if (failure === '') { window.location.replace('/'); return; }
+        forget.hidden = false;
+        say('This device is no longer trusted. Sign in with a code.', true);
+        describe(failure);
+      });
+    });
+
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      var raw = input.value.trim();
+      var match = /[?&]token=([A-Za-z0-9_-]{20,})/.exec(raw);
+      var code = match ? match[1] : raw;
+      if (!/^[A-Za-z0-9_-]{20,}$/.test(code)) {
+        if (note) note.textContent = 'That does not look like a code. It is the long random string after "token=".';
+        return;
+      }
+      window.location.href = '/?token=' + encodeURIComponent(code);
+    });
+  })();
+  </script>
+</body>
+</html>`;
+
+const CODE_REJECTED = 'That code was not accepted. Codes are minted per dsh web run, so get a fresh one and try again.';
+
+// A 200 rather than a 401: the response IS a working page, not an error, and the
+// marker header keeps it distinguishable from the app shell it stands in for.
+function signInResponse(note) {
+  return new Response(SIGN_IN_PAGE.replace('__NOTE__', note), {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-DSH-PWA-Signin': '1'
+    }
+  });
+}
+
 // Safe cache put — swallows errors for unsupported schemes (chrome-extension://, etc.)
 function safeCachePut(cache, request, response) {
   return cache.put(request, response).catch(() => {});
 }
 
 // DSH dynamic routes registered outside /api: identity JSON, the OAuth
-// callback, the application catalog and this plugin's own version endpoint.
-// They answer with data or redirects, so they must reach the network on every
-// request instead of being pinned by the static cache-first branch.
+// callback, the application catalog and this plugin's own endpoints. They
+// answer with data or redirects, so they must reach the network on every
+// request instead of being pinned by the cache-first static branch.
 const BYPASS_PREFIXES = [
   '/api',
   '/auth-api',
@@ -62,14 +271,14 @@ const BYPASS_PREFIXES = [
 
 function bypasses(url, request) {
   return (
-    BYPASS_PREFIXES.some((prefix) =>
-      url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)
+    BYPASS_PREFIXES.some(
+      (prefix) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)
     ) || request.headers.get('upgrade') === 'websocket'
   );
 }
 
-// A response may enter the cache only when it is a successful same-origin
-// reply the server allows us to store: 5xx navigations must never become the
+// A response may enter a cache only when it is a successful same-origin reply
+// the server allows us to store: a 5xx navigation must never become the
 // offline fallback, and `Cache-Control: no-store` means exactly that.
 function isStorable(response) {
   if (!response || response.status !== 200 || response.type !== 'basic') return false;
@@ -81,19 +290,12 @@ function isStorable(response) {
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(STATIC_CACHE)
-      .then((cache) =>
-        // cache.addAll is atomic: one missing asset (a favicon DSH core does
-        // not serve, a transient 503, ...) would reject the whole install and
-        // leave the worker redundant forever, because an unchanged script
-        // never triggers a new install. Add each URL on its own instead.
-        Promise.all(
-          PRE_CACHE_URLS.map((url) =>
-            cache.add(url).catch((err) => {
-              console.warn('[DSH PWA] pre-cache skipped:', url, err);
-            })
-          )
-        )
-      )
+      // One URL at a time, not addAll: a locked-out client gets a 401 for '/'
+      // (the dsh token fence), and addAll rejects as a whole, which would leave
+      // the update permanently uninstalled - exactly when a client most needs
+      // the newer worker. A missing pre-cache entry is recoverable offline; a
+      // failed install is not.
+      .then((cache) => Promise.all(PRE_CACHE_URLS.map((url) => cache.add(url).catch(() => {}))))
       .then(() => self.skipWaiting())
   );
 });
@@ -130,6 +332,12 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
+          // The fence's own 401 is plain text, so it is never cached and never
+          // passed through: hand the user a page that can mint the cookie.
+          // A 401 that still carries ?token= means that code was rejected.
+          if (response.status === 401) {
+            return signInResponse(url.searchParams.has('token') ? CODE_REJECTED : '');
+          }
           if (isStorable(response)) {
             const responseClone = response.clone();
             caches.open(CACHE_NAME).then((cache) => {
@@ -156,7 +364,8 @@ self.addEventListener('fetch', (event) => {
         if (cached) return cached;
 
         return fetch(request).then((response) => {
-          // Only cache successful, storable same-origin responses
+          // Only cache successful same-origin responses
+          // Only successful, storable same-origin responses
           if (!isStorable(response)) {
             return response;
           }
@@ -180,6 +389,6 @@ self.addEventListener('message', (event) => {
     self.skipWaiting();
   }
   if (event.data && event.data.type === 'GET_VERSION') {
-    event.ports[0].postMessage({ version: CACHE_NAME });
+    event.ports[0].postMessage({ version: VERSION });
   }
 });
