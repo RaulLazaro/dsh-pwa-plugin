@@ -1,3 +1,10 @@
+> [!WARNING]
+> **DEPRECATED — no longer maintained.** This repository is archived and kept only as a historical reference. It is not updated, not supported, and not compatible with current DeepSeek Harness releases. Please do not open issues or pull requests.
+>
+> **OBSOLETO — sin mantenimiento.** Este repositorio está archivado y se conserva solo como referencia histórica. No se actualiza, no recibe soporte y no es compatible con las versiones actuales de DeepSeek Harness.
+
+---
+
 # DSH PWA Plugin
 
 PWA plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) that adds offline support and install-as-app capability.
